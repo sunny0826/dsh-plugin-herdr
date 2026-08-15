@@ -15,3 +15,8 @@ scratch-plugin/
 
 # 系统
 .DS_Store
+
+# 内部文档（不进仓库）
+docs/
+DESIGN.md
+TASKS.md
