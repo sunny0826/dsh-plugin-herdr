@@ -1,0 +1,2 @@
+name: Herdr 模式
+description: 会话绑定 Herdr——本对话视为运行在 Herdr 中的 Agent，状态实时显示在 Herdr 侧边栏，优先使用 herdr 工具操作 workspace / pane / agent。

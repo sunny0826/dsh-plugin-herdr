@@ -1,0 +1,17 @@
+- insert:
+    # 提供者：ctx.herdr 服务 + 状态面板数据源（必须先于消费者加载）
+    - id: dsh-plugin-herdr-client
+      name: 'dsh-plugin-herdr/client-entry'
+      config:
+        cliPath: herdr
+        timeoutMs: 15000
+
+    # 消费者：herdr_* 工具 + 事件转发（inject ['tools', 'herdr', 'jobs']）
+    - id: dsh-plugin-herdr
+      name: 'dsh-plugin-herdr'
+      config:
+        transport: cli
+        timeoutMs: 15000
+        allowBackground: false
+        events:
+          enabled: false

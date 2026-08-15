@@ -1,0 +1,17 @@
+# 依赖与构建
+node_modules/
+lib/
+dist/
+*.tgz
+.pnpm-store/
+
+# 本地测试环境
+.dsh-home/
+scratch-plugin/
+
+# 日志与临时文件
+*.log
+.tmp-*
+
+# 系统
+.DS_Store

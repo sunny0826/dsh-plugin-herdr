@@ -1,0 +1,65 @@
+{
+  "name": "dsh-plugin-herdr",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.mjs",
+  "types": "lib/index.d.mts",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "presets"
+  ],
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.mts",
+      "default": "./lib/index.mjs"
+    },
+    "./client": {
+      "types": "./lib/client.d.cts",
+      "default": "./lib/client.cjs"
+    },
+    "./client-entry": {
+      "types": "./lib/client-entry.d.mts",
+      "default": "./lib/client-entry.mjs"
+    },
+    "./session-mode": {
+      "types": "./lib/session-mode.d.mts",
+      "default": "./lib/session-mode.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown && tsdown --config tsdown.web.config.ts",
+    "gen:types": "node scripts/gen-types.mjs",
+    "test": "pnpm build && node --experimental-transform-types --test \"test/unit/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-jobs": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-skill": "0.0.1-rc.1",
+    "@types/node": "^26.0.0",
+    "@types/react": "^19.2.18",
+    "react": "^19.2.8",
+    "tsdown": "^0.22.14",
+    "typescript": "^5.9.0"
+  }
+}
