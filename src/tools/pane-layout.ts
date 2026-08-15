@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import { toToolError } from './shared.ts'
 
@@ -16,7 +17,7 @@ export function registerPaneLayout(ctx: Context) {
     presentCall: (args) => ({ card: 'generic', title: `Pane layout ${args.pane_id ?? '(focused)'}` } as const),
     async execute(args) {
       try {
-        return await ctx.herdr.paneLayout({ pane_id: args.pane_id }) as never
+        return (await ctx.herdr.paneLayout({ pane_id: args.pane_id })) as JsonValue
       } catch (err) {
         toToolError(err)
       }

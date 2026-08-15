@@ -1,0 +1,181 @@
+// CA-003：工具输出契约测试 —— 每个工具的 execute 返回值必须通过其声明的 output.schema。
+// 覆盖 14 个工具（含 socket-only 的 layout_apply）的 completed/background 分支，
+// 以及 herdr 抛错时 execute 的 error 路径（toToolError 归一化）。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { validateJsonSchemaValue, type ToolDefinition, type ToolRunContext } from '@deepseek-ai/dsh-tools'
+import type { Context } from '@deepseek-ai/cordis'
+import { HerdrCliError } from '../../src/client/cli.ts'
+import { registerSnapshot } from '../../src/tools/snapshot.ts'
+import { registerAgentList } from '../../src/tools/agent-list.ts'
+import { registerPaneRun } from '../../src/tools/pane-run.ts'
+import { registerAgentWait } from '../../src/tools/agent-wait.ts'
+import { registerWorkspaceCreate } from '../../src/tools/workspace-create.ts'
+import { registerPaneSplit } from '../../src/tools/pane-split.ts'
+import { registerPaneSendKeys } from '../../src/tools/pane-send-keys.ts'
+import { registerPaneRead } from '../../src/tools/pane-read.ts'
+import { registerPaneLayout } from '../../src/tools/pane-layout.ts'
+import { registerLayoutApply } from '../../src/tools/layout-apply.ts'
+import { registerAgentPrompt } from '../../src/tools/agent-prompt.ts'
+import { registerAgentExplain } from '../../src/tools/agent-explain.ts'
+import { registerAgentSendKeys } from '../../src/tools/agent-send-keys.ts'
+import { registerNotification } from '../../src/tools/notification.ts'
+
+/** 基于 env-findings / cli 单测的 herdr 服务 fixture（CLI 与 socket 传输共用形状）。 */
+function makeHerdr() {
+  return {
+    snapshot: async () => ({
+      version: '0.8.0',
+      protocol: 19,
+      workspaces: [{ workspace_id: 'w1', label: 'demo', pane_count: 1 }],
+      agents: [{ pane_id: 'w1:p1', workspace_id: 'w1', agent: 'claude', status: 'done', message: 'ok' }],
+      panes: [{ pane_id: 'w1:p1', workspace_id: 'w1' }],
+      tabs: [],
+      layouts: [],
+      focused_pane_id: 'w1:p1',
+      focused_tab_id: null,
+      focused_workspace_id: 'w1',
+    }),
+    listAgents: async () => [
+      { pane_id: 'w1:p1', workspace_id: 'w1', agent: 'claude', status: 'done', message: 'ok', tab_id: 't1' },
+    ],
+    waitAgent: async () => ({ kind: 'completed', status: 'done', agent: 'claude', message: 'ok', waited_ms: 100 }),
+    agentPrompt: async () => ({ submitted: true, status: 'idle', waited_ms: 100 }),
+    runCommand: async () => ({
+      kind: 'completed',
+      pane_id: 'w1:p1',
+      exit_code: 0,
+      output: 'hello\n',
+      truncated: false,
+      timed_out: false,
+    }),
+    paneSplit: async () => ({ pane_id: 'w1:p2' }),
+    paneSendKeys: async () => undefined,
+    paneRead: async () => ({ text: 'hello', truncated: false }),
+    paneLayout: async () => ({ type: 'layout', root: { type: 'pane' } }),
+    layoutApply: async () => ({ applied: true }),
+    showNotification: async () => undefined,
+    agentSendKeys: async () => undefined,
+    agentExplain: async () => ({ reason: 'detected via pane activity', agent: 'claude' }),
+    workspaceCreate: async () => ({ workspace_id: 'w1', pane_id: 'w1:p1' }),
+  }
+}
+
+interface RegisteredTool {
+  name: string
+  def: ToolDefinition
+  args: Record<string, unknown>
+}
+
+function registerAll(opts: { allowBackground?: boolean; herdr?: ReturnType<typeof makeHerdr> } = {}): RegisteredTool[] {
+  const defs: ToolDefinition[] = []
+  const ctx = {
+    tools: { register: (def: ToolDefinition) => { defs.push(def); return () => {} } },
+    jobs: { start: () => 'herdr-1' },
+    herdr: opts.herdr ?? makeHerdr(),
+  } as unknown as Context
+  const bg = opts.allowBackground ?? false
+  registerSnapshot(ctx)
+  registerAgentList(ctx)
+  registerPaneRun(ctx, { allowBackground: bg })
+  registerAgentWait(ctx, { allowBackground: bg })
+  registerWorkspaceCreate(ctx)
+  registerPaneSplit(ctx)
+  registerPaneSendKeys(ctx)
+  registerPaneRead(ctx)
+  registerPaneLayout(ctx)
+  registerLayoutApply(ctx) // socket-only 工具也纳入契约（execute 直接可测）
+  registerAgentPrompt(ctx)
+  registerAgentExplain(ctx)
+  registerAgentSendKeys(ctx)
+  registerNotification(ctx)
+  assert.equal(defs.length, 14, 'all 14 tools registered')
+  return defs.map(def => ({
+    name: def.name,
+    def,
+    args: (CONTRACT_CASES[def.name] ?? {}) as Record<string, unknown>,
+  }))
+}
+
+const exec = { signal: new AbortController().signal, agent: 'tester' } as unknown as ToolRunContext
+
+/** 每个工具的成功路径参数（与 herdr fixture 匹配）。 */
+const CONTRACT_CASES: Record<string, Record<string, unknown>> = {
+  herdr_snapshot: {},
+  herdr_agent_list: { status: 'done' },
+  herdr_agent_wait: { target: 'w1:p1', until: ['done'], timeout_ms: 1000 },
+  herdr_agent_prompt: { target: 'w1:p1', text: 'say hi', wait: true, until: ['idle'], timeout_ms: 1000 },
+  herdr_pane_run: { command: 'echo hi', pane_id: 'w1:p1', wait_ms: 1000 },
+  herdr_pane_split: { direction: 'right', ratio: 0.5 },
+  herdr_pane_send_keys: { pane_id: 'w1:p1', keys: ['enter'] },
+  herdr_pane_read: { pane_id: 'w1:p1', source: 'recent', lines: 50 },
+  herdr_pane_layout: { pane_id: 'w1:p1' },
+  herdr_layout_apply: { root: { type: 'pane' }, workspace_id: 'w1', tab_label: 'demo' },
+  herdr_notification: { title: 'hi', body: 'body', position: 'top-right' },
+  herdr_agent_send_keys: { target: 'w1:p1', keys: ['ctrl+c'] },
+  herdr_agent_explain: { target: 'w1:p1' },
+  herdr_workspace_create: { label: 'demo', cwd: '/tmp' },
+}
+
+test('CA-003: all 14 tools\' completed outputs validate against their declared schema', async () => {
+  const tools = registerAll()
+  for (const { name, def, args } of tools) {
+    const value = await def.execute(args, exec)
+    const violations = validateJsonSchemaValue(def.output.schema, value)
+    assert.deepEqual(violations, [], `${name} output should satisfy its declared schema`)
+  }
+})
+
+test('CA-003: workspace_create schema accepts the real { workspace_id, pane_id } shape', async () => {
+  const tools = registerAll()
+  const ws = tools.find(t => t.name === 'herdr_workspace_create')!
+  // CLI 实测 workspaceCreate 返回 root_pane.pane_id（CA-003 漂移点）
+  const value = await ws.def.execute({ label: 'demo' }, exec)
+  assert.deepEqual(value, { workspace_id: 'w1', pane_id: 'w1:p1' })
+  assert.deepEqual(validateJsonSchemaValue(ws.def.output.schema, value), [])
+  // pane_id 缺失（无 root pane 时）也必须通过
+  assert.deepEqual(validateJsonSchemaValue(ws.def.output.schema, { workspace_id: 'w1' }), [])
+})
+
+test('CA-003: background branches (pane_run / agent_wait) validate against schema', async () => {
+  const tools = registerAll({ allowBackground: true })
+  const run = tools.find(t => t.name === 'herdr_pane_run')!
+  const runBg = await run.def.execute({ command: 'sleep 5', run_in_background: true }, exec)
+  assert.deepEqual(runBg, { kind: 'background', jobId: 'herdr-1' })
+  assert.deepEqual(validateJsonSchemaValue(run.def.output.schema, runBg), [])
+
+  const wait = tools.find(t => t.name === 'herdr_agent_wait')!
+  const waitBg = await wait.def.execute({ target: 'w1:p1', until: ['done'], run_in_background: true }, exec)
+  assert.deepEqual(waitBg, { kind: 'background', jobId: 'herdr-1' })
+  assert.deepEqual(validateJsonSchemaValue(wait.def.output.schema, waitBg), [])
+})
+
+test('CA-003: herdr errors surface as normalized tool errors (isError path)', async () => {
+  const failingHerdr = makeHerdr()
+  for (const key of Object.keys(failingHerdr) as Array<keyof ReturnType<typeof makeHerdr>>) {
+    ;(failingHerdr[key] as () => Promise<unknown>) = async () => {
+      throw new HerdrCliError('HERDR_UNAVAILABLE', 'herdr server not running')
+    }
+  }
+  const tools = registerAll({ herdr: failingHerdr })
+  for (const { name, def, args } of tools) {
+    await assert.rejects(
+      () => def.execute(args, exec),
+      (err: Error) => {
+        // toToolError：HerdrCliError → 带 code 前缀的普通 Error
+        assert.ok(err instanceof Error)
+        assert.match(err.message, /HERDR_UNAVAILABLE/)
+        return true
+      },
+      `${name} should surface herdr failures as tool errors`,
+    )
+  }
+})
+
+test('CA-003: arg validation rejects invalid input before reaching herdr', async () => {
+  const tools = registerAll()
+  const run = tools.find(t => t.name === 'herdr_pane_run')!
+  await assert.rejects(() => run.def.execute({ command: '   ' }, exec), /command must be a non-empty string/)
+  const send = tools.find(t => t.name === 'herdr_pane_send_keys')!
+  await assert.rejects(() => send.def.execute({ pane_id: 'w1:p1', keys: [] }, exec), /keys must be a non-empty array/)
+})

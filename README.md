@@ -54,6 +54,20 @@ picker (copied to `$DSH_HOME/.agent-presets/herdr/` on first load).
 | `events.maxReconnectMs` | number | 30000 | event subscription reconnect cap |
 | `reportState` | boolean | `true` | report DSH→Herdr state inside a pane (`HERDR_ENV`) |
 
+CLI/socket transport limits (CA-014):
+
+- Per-command output is capped at 1 MiB per stream on both transports;
+  `pane_read`/`pane_run` report `truncated: true` when the cap is hit (socket
+  additionally surfaces the server-reported `truncated` flag).
+- CLI commands are spawned as a detached process group on POSIX; on
+  timeout/abort the whole process tree is killed (no leftover `sh -c`
+  children). Windows only terminates the direct child.
+
+Platform support: the CLI transport (`sh -c` wrapping, process groups,
+Unix-domain sockets) is **POSIX-only**; on Windows the plugin does not guess a
+named-pipe socket path and falls back to the CLI transport, which is not
+supported — use POSIX (macOS/Linux) for full functionality.
+
 Example patch (`cordis.patch.yml`):
 
 ```yaml
@@ -103,7 +117,13 @@ Select **Herdr 模式** when creating a session. The session:
   CLI or talks to the local socket.
 - The panel endpoints (`/herdr-status`, `/herdr-start`,
   `/herdr-session-pane`) are plain HTTP on the local web server — do not
-  expose the DSH web port publicly.
+  expose the DSH web port publicly. They are additionally guarded (CA-007):
+  - strict methods: `/herdr-status` & `/herdr-session-pane` are GET-only,
+    `/herdr-start` is POST-only (otherwise `405 + Allow`);
+  - local-context only: `Host` must be `localhost`/`127.0.0.1`/`::1`
+    (DNS-rebinding defense); cross-site `Origin` or `Sec-Fetch-Site: cross-site`
+    is rejected with `403` (CSRF defense) — unauthorized requests cannot start
+    the herdr server or read terminal/topology data.
 - State reporting is display-only: it does not affect Herdr's own wait or
   notification semantics.
 
@@ -121,6 +141,17 @@ Select **Herdr 模式** when creating a session. The session:
 ```sh
 pnpm install
 pnpm build        # tsdown (node entries + web client bundle)
+pnpm quality      # CA-010 质量门：typecheck + gen-types 漂移检查 + unit tests
 pnpm test         # unit tests (node --test)
+pnpm test:integration  # build + run.mjs + extended.mjs + events.mjs (真实 herdr，前置不满足时 SKIP)
 pnpm gen:types    # regenerate protocol types from the herdr schema fixture
 ```
+
+## Compatibility
+
+- Verified against **herdr 0.8.0 / protocol 19 / schema_version 1** (the
+  fixture `test/fixtures/herdr-api.schema.json` matches live `herdr api schema`;
+  `pnpm gen:types:check` fails on drift).
+- Acceptance status is tracked in `TASKS.md` (三态：实现 / 自动验证 / 人工验证);
+  real-browser visual items (M0-06 HMR, M1-10, M3-05, M7/M10-M12) remain
+  manual pending — automated coverage lives at the logic layer (CA-016).

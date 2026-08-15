@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { HerdrSnapshot } from '../client/index.ts'
 import { toToolError } from './shared.ts'
@@ -37,7 +38,8 @@ export function registerSnapshot(ctx: Context) {
     presentCall: () => ({ card: 'generic', title: 'Herdr snapshot', kind: 'other' } as const),
     async execute() {
       try {
-        return (await ctx.herdr.snapshot()) as unknown as never
+        // CA-003：明确声明意图的 JSON 强转（替换语义错误的 as never）
+        return (await ctx.herdr.snapshot()) as unknown as JsonValue
       } catch (err) {
         toToolError(err)
       }

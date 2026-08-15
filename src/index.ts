@@ -1,5 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Config, type Config as ConfigType, resolveCliPath } from './config.ts'
+import { guardLocalRequest, requireMethod } from './http-guard.ts'
+import { createLogger } from './log.ts'
 import { setupEventForwarding } from './events/forward.ts'
 import { setupStateReporting } from './events/state-report.ts'
 import { HerdrStatusTracker, startHerdrServer } from './status.ts'
@@ -58,7 +60,7 @@ export function apply(ctx: Context, config: ConfigType) {
   const tracker = new HerdrStatusTracker(ctx, ctx.herdr, cliPath, { pollIntervalMs: 2000 })
   void tracker.probeCli().then(info => {
     if (!info.available) {
-      console.log(`[dsh-plugin-herdr] herdr CLI not found at '${info.path}'. Install: curl -fsSL https://herdr.dev/install.sh | sh`)
+      createLogger(ctx, 'index').warn("herdr CLI not found at '%s'. Install: curl -fsSL https://herdr.dev/install.sh | sh", info.path)
     }
   })
   const offAgentState = ctx.on('herdr/agent-state', (info: { pane_id: string; agent: string; status: string; message?: string }) =>
@@ -74,11 +76,32 @@ export function apply(ctx: Context, config: ConfigType) {
   ctx.inject(['webServer'], injected => {
     const webServer = (injected as unknown as { webServer: { register(r: unknown): () => void } }).webServer
     type Res = { writeHead(code: number, headers: Record<string, string>): void; end(body?: string): void }
+    // CA-007：控制面守卫 —— 严格方法 + Host allowlist + Origin/Sec-Fetch-Site 同源
+    type Req = { method?: string; url?: string; headers?: Record<string, string | string[] | undefined> }
+    const reject = (res: Res, status: number, message: string, extraHeaders: Record<string, string> = {}) => {
+      res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...extraHeaders })
+      res.end(JSON.stringify({ ok: false, error: message }))
+    }
+    const guard = (res: Res, req: unknown, allowed: string): boolean => {
+      const r = req as Req
+      const m = requireMethod(r, allowed)
+      if (!m.ok) {
+        reject(res, m.status, m.message, { allow: allowed.toUpperCase() })
+        return false
+      }
+      const local = guardLocalRequest(r)
+      if (!local.ok) {
+        reject(res, local.status, local.message)
+        return false
+      }
+      return true
+    }
     // M5 状态看板数据源：GET /herdr-status
     offRoute = webServer.register({
       kind: 'exact',
       path: '/herdr-status',
-      handler: (_req: unknown, res: Res) => {
+      handler: (req: unknown, res: Res) => {
+        if (!guard(res, req, 'GET')) return
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(tracker.snapshot()))
       },
@@ -87,11 +110,13 @@ export function apply(ctx: Context, config: ConfigType) {
     offBindingRoute = webServer.register({
       kind: 'exact',
       path: '/herdr-session-pane',
-      handler: (req: { url?: string }, res: Res) => {
+      handler: (req: unknown, res: Res) => {
+        if (!guard(res, req, 'GET')) return
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         let paneId: string | null = null
         try {
-          const agent = new URL(req.url ?? '/', 'http://x').searchParams.get('agent')
+          const r = req as Req
+          const agent = new URL(r.url ?? '/', 'http://x').searchParams.get('agent')
           paneId = agent ? getBindingRegistry().get(agent)?.pane_id ?? null : null
         } catch {
           // 忽略解析错误（返回 null）
@@ -103,7 +128,8 @@ export function apply(ctx: Context, config: ConfigType) {
     offStartRoute = webServer.register({
       kind: 'exact',
       path: '/herdr-start',
-      handler: async (_req: unknown, res: Res) => {
+      handler: async (req: unknown, res: Res) => {
+        if (!guard(res, req, 'POST')) return
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         try {
           const server = await startHerdrServer(cliPath)
@@ -143,9 +169,10 @@ export function apply(ctx: Context, config: ConfigType) {
   })
 
   ctx.effect(() => {
-    console.log(
-      `[dsh-plugin-herdr] plugin loaded! transport=${config.transport} timeoutMs=${config.timeoutMs} allowBackground=${config.allowBackground} events=${config.events.enabled}`,
+    createLogger(ctx, 'index').info(
+      'plugin loaded! transport=%s timeoutMs=%d allowBackground=%s events=%s',
+      config.transport, config.timeoutMs, config.allowBackground, config.events.enabled,
     )
-    return () => console.log('[dsh-plugin-herdr] plugin disposed')
+    return () => createLogger(ctx, 'index').debug('plugin disposed')
   })
 }

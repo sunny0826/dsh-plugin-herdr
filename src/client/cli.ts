@@ -2,6 +2,7 @@ import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process'
 import type { Context } from '@deepseek-ai/cordis'
 import { HerdrClient } from './index.ts'
 import { pollPaneUntilStable } from './poll.ts'
+import type { HerdrResultMap } from './types.ts'
 import type {
   AgentExplainRequest,
   AgentFilter,
@@ -19,6 +20,7 @@ import type {
   PaneSendKeysRequest,
   PaneSplitRequest,
   ReportAgentRequest,
+  ReportMetadataRequest,
   RunCommandRequest,
   RunCommandResult,
   WaitAgentRequest,
@@ -57,6 +59,23 @@ interface CliEnvelope {
   error?: { code?: string; message?: string }
 }
 
+/** CA-002：单条 CLI 流（stdout/stderr）的固定累积上限；超过即截断并报告 truncated。 */
+export const MAX_CLI_OUTPUT_BYTES = 1024 * 1024
+
+/**
+ * CA-002：终止 CLI 子进程及其进程树。
+ * - POSIX：子进程以 detached 方式 spawn 成为进程组 leader，负 pid 可对整个组发信号，
+ *   保证 sh -c 包装出的 shell 后代（pane run 的 COMMAND 等）不会残留；
+ * - Windows：策略明确为“仅终止直接子进程”（CLI 传输本身仅支持 POSIX sh -c；
+ *   如需整树终止可改用 taskkill /T /F，当前不实现）。
+ */
+export function killProcessTree(child: ChildProcess, killGroup = process.platform !== 'win32'): void {
+  try { child.kill('SIGKILL') } catch { /* 已退出/不可杀 */ }
+  if (killGroup && child.pid != null) {
+    try { process.kill(-child.pid, 'SIGKILL') } catch { /* 组已不存在（ESRCH） */ }
+  }
+}
+
 const sleep = (ms: number) => new Promise<void>(res => setTimeout(res, ms))
 
 /**
@@ -87,18 +106,25 @@ export class CliHerdrClient extends HerdrClient {
 
   async snapshot(): Promise<HerdrSnapshot> {
     const { result } = await this.runCli(['api', 'snapshot'], { retryRead: true })
-    const snapshot = (result as { snapshot?: HerdrSnapshot } | undefined)?.snapshot
-    if (!snapshot) throw new HerdrCliError('HERDR_PROTOCOL', 'session.snapshot response missing snapshot')
-    return snapshot
+    // CA-004：由 fixture 生成的 session_snapshot 分支类型替代宽松强转；
+    // agents 仍归一化 status（协议字段 agent_status → 领域 status）
+    const raw = (result as HerdrResultMap['session.snapshot'] | undefined)?.snapshot
+    if (!raw) throw new HerdrCliError('HERDR_PROTOCOL', 'session.snapshot response missing snapshot')
+    const agents = raw.agents.map(a => ({
+      ...a,
+      status: (a.agent_status ?? (a as unknown as { status?: AgentStatus }).status ?? 'unknown') as AgentStatus,
+    })) as HerdrAgentInfo[]
+    return { ...raw, agents } as HerdrSnapshot
   }
 
   async listAgents(filter?: AgentFilter): Promise<HerdrAgentInfo[]> {
     const { result } = await this.runCli(['agent', 'list'], { retryRead: true })
-    const raw = Array.isArray((result as { agents?: unknown } | undefined)?.agents)
-      ? (result as { agents: Array<Record<string, unknown>> }).agents
-      : []
-    // 协议状态字段是 agent_status（env-findings §11）；归一化到 status 便于消费
-    const agents = raw.map(a => ({ ...a, status: (a.agent_status ?? a.status) as AgentStatus })) as HerdrAgentInfo[]
+    // CA-004：agent_list 分支由 fixture 生成；status 归一化仍保留（协议字段 agent_status）
+    const raw = (result as HerdrResultMap['agent.list'] | undefined)?.agents ?? []
+    const agents = raw.map(a => ({
+      ...a,
+      status: (a.agent_status ?? (a as unknown as { status?: AgentStatus }).status ?? 'unknown') as AgentStatus,
+    })) as HerdrAgentInfo[]
     if (!filter) return agents
     return agents.filter(a => {
       if (filter.workspace_id && a.workspace_id !== filter.workspace_id) return false
@@ -117,8 +143,8 @@ export class CliHerdrClient extends HerdrClient {
       if (req.ratio != null) args.push('--ratio', String(req.ratio))
       if (req.cwd) args.push('--cwd', req.cwd)
       for (const [k, v] of Object.entries(req.env ?? {})) args.push('--env', `${k}=${v}`)
-      const { result } = await this.runCli(args)
-      const pane = (result as { pane?: { pane_id?: string } } | undefined)?.pane
+      const { result } = await this.runCli(args, { signal })
+      const pane = (result as HerdrResultMap['pane.split'] | undefined)?.pane
       if (!pane?.pane_id) throw new HerdrCliError('HERDR_PROTOCOL', 'pane.split response missing pane_id')
       paneId = pane.pane_id
     }
@@ -126,24 +152,35 @@ export class CliHerdrClient extends HerdrClient {
     // 2) 执行命令前记录 pane 快照基线（用于裁剪终端历史噪音）
     let baseline = ''
     try {
-      baseline = await this.readPaneVisible(paneId)
+      baseline = (await this.readPaneVisible(paneId)).text
     } catch {
       // 新 pane 可能尚未就绪；读不到基线则不裁剪
     }
 
     // 3) 执行命令：sh -c 包装（argv 语义；POSIX。Windows 留待后续）
-    //    pane run 异步执行且无 stdout，按纯文本处理
-    await this.runCli(['pane', 'run', paneId, 'sh', '-c', req.command], { rawText: true })
+    //    pane run 异步执行且无 stdout，按纯文本处理；abort 时终止 CLI 子进程（CA-001）
+    await this.runCli(['pane', 'run', paneId, 'sh', '-c', req.command], { rawText: true, signal })
 
     // 4) 前台轮询输出稳定（共享逻辑，CLI 与 socket 传输一致；基线裁剪历史）
-    const { output, timedOut } = await pollPaneUntilStable(
-      id => this.readPaneVisible(id),
+    //    CA-002：任一轮 pane read 被截断（超过 MAX_CLI_OUTPUT_BYTES）都如实上报 truncated
+    let truncated = false
+    const readPane = async (id: string): Promise<string> => {
+      const r = await this.readPaneVisible(id)
+      if (r.truncated) truncated = true
+      return r.text
+    }
+    const { output, status } = await pollPaneUntilStable(
+      readPane,
       paneId,
       req.wait_ms ?? this.options.timeoutMs,
       signal,
       { baseline },
     )
-    return { kind: 'completed', pane_id: paneId, exit_code: null, output, truncated: false, timed_out: timedOut }
+    // CA-011：轮询期取消不是超时——以 HERDR_ABORTED 抛出（工具层转错误/取消语义）
+    if (status === 'aborted') {
+      throw new HerdrCliError('HERDR_ABORTED', 'runCommand aborted while waiting for pane output')
+    }
+    return { kind: 'completed', pane_id: paneId, exit_code: null, output, truncated, timed_out: status === 'timed_out' }
   }
 
   async waitAgent(req: WaitAgentRequest, signal: AbortSignal): Promise<WaitAgentResult> {
@@ -162,13 +199,15 @@ export class CliHerdrClient extends HerdrClient {
       }
       throw new HerdrCliError('HERDR_ERROR', `agent.wait failed: ${error.code ?? 'unknown'}: ${error.message ?? ''}`)
     }
-    // 成功路径（result 形状以 herdr api schema 为准，宽松解析）
-    const res = (result ?? {}) as { status?: string; agent?: string; message?: string | null }
+    // 成功路径：实测 CLI/raw socket 均返回 agent_info 分支（{ agent: AgentInfo, type: 'agent_info' }），
+    // 状态字段为 agent.agent_status（CA-004 由 fixture 生成类型，替换宽松强转）
+    const res = result as HerdrResultMap['agent.wait'] | undefined
+    const agent = res?.agent
     return {
       kind: 'completed',
-      status: (res.status ?? req.until[0]) as AgentStatus,
-      agent: res.agent,
-      message: res.message ?? undefined,
+      status: (agent?.agent_status ?? req.until[0]) as AgentStatus,
+      agent: agent?.agent ?? agent?.name ?? undefined,
+      pane_id: agent?.pane_id ?? undefined,
       waited_ms: Date.now() - start,
     }
   }
@@ -183,8 +222,8 @@ export class CliHerdrClient extends HerdrClient {
     if (req.label) args.push('--label', req.label)
     for (const [k, v] of Object.entries(req.env ?? {})) args.push('--env', `${k}=${v}`)
     const { result } = await this.runCli(args)
-    const res = (result ?? {}) as { workspace?: { workspace_id?: string }; root_pane?: { pane_id?: string } }
-    if (!res.workspace?.workspace_id) throw new HerdrCliError('HERDR_PROTOCOL', 'workspace.create response missing workspace_id')
+    const res = result as HerdrResultMap['workspace.create'] | undefined
+    if (!res?.workspace?.workspace_id) throw new HerdrCliError('HERDR_PROTOCOL', 'workspace.create response missing workspace_id')
     return {
       workspace_id: res.workspace.workspace_id,
       ...res.root_pane?.pane_id ? { pane_id: res.root_pane.pane_id } : {},
@@ -200,7 +239,7 @@ export class CliHerdrClient extends HerdrClient {
     if (req.cwd) args.push('--cwd', req.cwd)
     for (const [k, v] of Object.entries(req.env ?? {})) args.push('--env', `${k}=${v}`)
     const { result } = await this.runCli(args)
-    const pane = (result as { pane?: { pane_id?: string } } | undefined)?.pane
+    const pane = (result as HerdrResultMap['pane.split'] | undefined)?.pane
     if (!pane?.pane_id) throw new HerdrCliError('HERDR_PROTOCOL', 'pane.split response missing pane_id')
     return { pane_id: pane.pane_id }
   }
@@ -213,13 +252,13 @@ export class CliHerdrClient extends HerdrClient {
     await this.runCli(['pane', 'send-keys', req.pane_id, ...req.keys], { rawText: true })
   }
 
-  async paneRead(req: PaneReadRequest): Promise<{ text: string }> {
+  async paneRead(req: PaneReadRequest): Promise<{ text: string; truncated: boolean }> {
     const args = ['pane', 'read', req.pane_id]
     if (req.source) args.push('--source', req.source)
     if (req.lines != null) args.push('--lines', String(req.lines))
     if (req.format) args.push('--format', req.format)
-    const { text } = await this.runCli(args, { rawText: true })
-    return { text }
+    const { text, truncated } = await this.runCli(args, { rawText: true })
+    return { text, truncated }
   }
 
   async paneLayout(req: PaneLayoutRequest): Promise<unknown> {
@@ -247,9 +286,9 @@ export class CliHerdrClient extends HerdrClient {
     if (error) {
       throw new HerdrCliError('HERDR_ERROR', `agent.prompt failed: ${error.code ?? 'unknown'}: ${error.message ?? ''}`)
     }
-    // CLI envelope：状态在 result.agent.agent_status（顶层没有 status/message）
-    const res = (result ?? {}) as { agent?: { agent_status?: string } }
-    const status = res.agent?.agent_status
+    // CLI envelope：状态在 result.agent.agent_status（agent_prompted 分支，CA-004 生成类型）
+    const res = result as HerdrResultMap['agent.prompt'] | undefined
+    const status = res?.agent?.agent_status
     return {
       submitted: true,
       ...status !== undefined ? { status } : {},
@@ -283,6 +322,18 @@ export class CliHerdrClient extends HerdrClient {
     await this.runCli(args, { rawText: true })
   }
 
+  async reportMetadata(req: ReportMetadataRequest): Promise<void> {
+    // CA-006 M3-03：herdr pane report-metadata（display-only；ttl_ms 控制过期）
+    const args = ['pane', 'report-metadata', req.pane_id, '--source', req.source]
+    if (req.agent) args.push('--agent', req.agent)
+    if (req.title) args.push('--title', req.title)
+    for (const [k, v] of Object.entries(req.tokens ?? {})) {
+      if (v !== null && v !== undefined) args.push('--token', `${k}=${v}`)
+    }
+    if (req.ttl_ms != null) args.push('--ttl-ms', String(req.ttl_ms))
+    await this.runCli(args, { rawText: true })
+  }
+
   async clearAgentAuthority(req: ClearAgentAuthorityRequest): Promise<void> {
     if (!req.agent) throw new HerdrCliError('HERDR_ERROR', 'release-agent requires the agent name')
     const args = ['pane', 'release-agent', req.pane_id, '--agent', req.agent]
@@ -307,29 +358,51 @@ export class CliHerdrClient extends HerdrClient {
 
   // 读取 scrollback（recent 快照）：visible 只是当前视口（新输出会顶掉旧行），
   // recent 返回完整历史，配合 runCommand 的基线裁剪可拿到干净的"本次命令输出"。
-  private async readPaneVisible(paneId: string): Promise<string> {
-    const { text } = await this.runCli(['pane', 'read', paneId, '--source', 'recent', '--lines', '500'], { rawText: true })
-    return text
+  // CA-002：同时返回截断标志（超过 MAX_CLI_OUTPUT_BYTES）。
+  private async readPaneVisible(paneId: string): Promise<{ text: string; truncated: boolean }> {
+    const { text, truncated } = await this.runCli(['pane', 'read', paneId, '--source', 'recent', '--lines', '500'], { rawText: true })
+    return { text, truncated }
   }
 
   /** 执行 CLI 并解析 envelope（或 rawText 纯文本）。 */
   private async runCli(
     args: string[],
     opts: { signal?: AbortSignal; spawnTimeoutMs?: number; retryRead?: boolean; rawText?: boolean } = {},
-  ): Promise<{ result?: unknown; error?: { code?: string; message?: string }; text: string }> {
-    const attempt = async (): Promise<{ result?: unknown; error?: { code?: string; message?: string }; text: string }> => {
-      const out = await this.spawnOnce(args, opts)
-      if (opts.rawText) return { text: out.stdout }
+  ): Promise<{ result?: unknown; error?: { code?: string; message?: string }; text: string; truncated: boolean }> {
+    // CA-001：每次调用默认使用配置 timeout（显式 spawnTimeoutMs 优先）。
+    const spawnOpts = { ...opts, spawnTimeoutMs: opts.spawnTimeoutMs ?? this.options.timeoutMs }
+    const attempt = async (): Promise<{ result?: unknown; error?: { code?: string; message?: string }; text: string; truncated: boolean }> => {
+      const out = await this.spawnOnce(args, spawnOpts)
+      // CA-002：stdout/stderr 任一流超限即整体标记 truncated
+      const truncated = out.stdoutTruncated || out.stderrTruncated
+      // CA-001：非零退出码（exitCode === null 表示被信号杀死）映射为稳定错误。
+      // 实测多数 CLI 错误 exit 0 且带 error envelope（env-findings §8.1），
+      // 但部分错误（不存在的 pane 等）exit 1（§8.2）——此前被当作成功，
+      // 导致 pane close/send-keys/run、notification 等失败时仍向工具层报告成功。
+      const failed = out.exitCode !== 0
+      if (opts.rawText) {
+        if (failed) {
+          const parsed = this.parseEnvelope(out.stderr)
+          const detail = parsed?.error?.message ?? (out.stderr || out.stdout).slice(0, 200)
+          throw new HerdrCliError('HERDR_ERROR', `herdr ${args.join(' ')} failed (exit ${out.exitCode ?? 'killed'}): ${detail}`)
+        }
+        return { text: out.stdout, truncated }
+      }
       // 部分错误（如不存在的 pane）把 envelope 输出到 stderr；stdout 为空时回退解析 stderr
       const parsed = this.parseEnvelope(out.stdout) ?? this.parseEnvelope(out.stderr)
       if (!parsed) {
+        const code = failed ? 'HERDR_ERROR' : 'HERDR_PROTOCOL'
         throw new HerdrCliError(
-          'HERDR_PROTOCOL',
-          `unparseable CLI output for 'herdr ${args.join(' ')}': stdout=${out.stdout.slice(0, 200)} stderr=${out.stderr.slice(0, 200)}`,
+          code,
+          `unparseable CLI output for 'herdr ${args.join(' ')}'${failed ? ` (exit ${out.exitCode ?? 'killed'})` : ''}: stdout=${out.stdout.slice(0, 200)} stderr=${out.stderr.slice(0, 200)}`,
         )
       }
-      if (parsed.error) return { error: parsed.error, text: out.stdout || out.stderr }
-      return { result: parsed.result, text: out.stdout || out.stderr }
+      if (parsed.error) return { error: parsed.error, text: out.stdout || out.stderr, truncated }
+      if (failed) {
+        // envelope 有 result 但进程非零退出：退出码权威性更高，仍报稳定错误
+        throw new HerdrCliError('HERDR_ERROR', `herdr ${args.join(' ')} exited with code ${out.exitCode} despite a result envelope`)
+      }
+      return { result: parsed.result, text: out.stdout || out.stderr, truncated }
     }
     try {
       return await attempt()
@@ -346,52 +419,103 @@ export class CliHerdrClient extends HerdrClient {
   private spawnOnce(
     args: string[],
     opts: { signal?: AbortSignal; spawnTimeoutMs?: number },
-  ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; stdoutTruncated: boolean; stderrTruncated: boolean }> {
     return new Promise((resolve, reject) => {
       const full = [this.options.cliPath, ...(this.options.session ? ['--session', this.options.session] : []), ...args]
+      const timeoutMs = opts.spawnTimeoutMs ?? this.options.timeoutMs
+      // CA-001：调用前已 abort → 直接返回 HERDR_ABORTED，不启动子进程
+      if (opts.signal?.aborted) {
+        reject(new HerdrCliError('HERDR_ABORTED', `herdr ${args[0]} aborted before spawn`))
+        return
+      }
+      // CA-002：POSIX 下 detached spawn 让子进程成为独立进程组 leader，
+      // 超时/abort 时可 kill 整个进程树（sh -c 包装的 pane run 等不会残留）；
+      // Windows 策略：独立 console（windowsHide 隐藏），仅终止直接子进程。
+      const isPosix = process.platform !== 'win32'
       let child
       try {
-        child = this.spawnImpl(full[0], full.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] })
+        child = this.spawnImpl(full[0], full.slice(1), {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: isPosix,
+          windowsHide: true,
+        })
       } catch (err) {
         reject(new HerdrCliError('HERDR_UNAVAILABLE', `failed to spawn '${full[0]}': ${(err as Error).message}`))
         return
       }
       let stdout = ''
       let stderr = ''
+      let stdoutTruncated = false
+      let stderrTruncated = false
       const outStream = child.stdout as NodeJS.ReadableStream | null
       const errStream = child.stderr as NodeJS.ReadableStream | null
       let settled = false
-      const timer = opts.spawnTimeoutMs
-        ? setTimeout(() => {
-            if (settled) return
-            settled = true
-            child.kill('SIGKILL')
-            reject(new HerdrCliError('HERDR_TIMEOUT', `herdr ${args[0]} timed out after ${opts.spawnTimeoutMs}ms`))
-          }, opts.spawnTimeoutMs)
-        : undefined
-      const finish = (code: number | null, sig: string | null) => {
+      // CA-001：所有结束路径统一清理 abort 监听器与超时 timer（不留孤儿）。
+      const cleanup = () => {
+        if (timer) clearTimeout(timer)
+        if (opts.signal) opts.signal.removeEventListener('abort', onAbort)
+      }
+      const finish = (code: number | null) => {
         if (settled) return
         settled = true
-        if (timer) clearTimeout(timer)
-        if (code === null && sig === 'SIGKILL' && timer) {
-          // 已由超时分支 reject；此处仅防重复
-          return
-        }
-        resolve({ stdout, stderr, exitCode: code })
+        cleanup()
+        resolve({ stdout, stderr, exitCode: code, stdoutTruncated, stderrTruncated })
       }
+      const fail = (err: HerdrCliError) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(err)
+      }
+      // CA-002：终止直接子进程 + 整个进程组（POSIX 负 pid）
+      const killTree = () => killProcessTree(child, isPosix)
+      // CA-001：AbortSignal → 终止子进程并返回 HERDR_ABORTED
+      const onAbort = () => {
+        if (settled) return
+        killTree()
+        fail(new HerdrCliError('HERDR_ABORTED', `herdr ${args[0]} aborted`))
+      }
+      if (opts.signal) opts.signal.addEventListener('abort', onAbort, { once: true })
+      const timer = setTimeout(() => {
+        if (settled) return
+        killTree()
+        fail(new HerdrCliError('HERDR_TIMEOUT', `herdr ${args[0]} timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
       child.on('error', (err: NodeJS.ErrnoException) => {
         if (settled) return
-        settled = true
-        if (timer) clearTimeout(timer)
         if (err.code === 'ENOENT') {
-          reject(new HerdrCliError('HERDR_UNAVAILABLE', `herdr CLI not found: '${full[0]}' (check config cliPath / HERDR_BIN_PATH)`))
+          fail(new HerdrCliError('HERDR_UNAVAILABLE', `herdr CLI not found: '${full[0]}' (check config cliPath / HERDR_BIN_PATH)`))
         } else {
-          reject(new HerdrCliError('HERDR_UNAVAILABLE', `failed to run '${full[0]}': ${err.message}`))
+          fail(new HerdrCliError('HERDR_UNAVAILABLE', `failed to run '${full[0]}': ${err.message}`))
         }
       })
-      outStream?.on('data', (d: Buffer | string) => { stdout += String(d) })
-      errStream?.on('data', (d: Buffer | string) => { stderr += String(d) })
-      child.on('close', (code, sig) => finish(code, sig))
+      // CA-002：输出上限——超过 MAX_CLI_OUTPUT_BYTES 停止累积（仍继续消费流，
+      // 避免子进程写满管道阻塞），并置 truncated 标志供上层报告。
+      const capStdout = (d: Buffer | string) => {
+        const s = String(d)
+        if (stdoutTruncated) return
+        const remaining = MAX_CLI_OUTPUT_BYTES - stdout.length
+        if (s.length > remaining) {
+          stdout += s.slice(0, remaining)
+          stdoutTruncated = true
+        } else {
+          stdout += s
+        }
+      }
+      const capStderr = (d: Buffer | string) => {
+        const s = String(d)
+        if (stderrTruncated) return
+        const remaining = MAX_CLI_OUTPUT_BYTES - stderr.length
+        if (s.length > remaining) {
+          stderr += s.slice(0, remaining)
+          stderrTruncated = true
+        } else {
+          stderr += s
+        }
+      }
+      outStream?.on('data', capStdout)
+      errStream?.on('data', capStderr)
+      child.on('close', (code) => finish(code))
     })
   }
 }

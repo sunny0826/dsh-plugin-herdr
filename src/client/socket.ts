@@ -1,8 +1,9 @@
 import { createConnection, type Socket } from 'node:net'
 import type { Context } from '@deepseek-ai/cordis'
 import { HerdrClient } from './index.ts'
-import { HerdrCliError } from './cli.ts'
+import { HerdrCliError, MAX_CLI_OUTPUT_BYTES } from './cli.ts'
 import { pollPaneUntilStable } from './poll.ts'
+import type { HerdrResultMap } from './types.ts'
 import type {
   AgentExplainRequest,
   AgentFilter,
@@ -20,6 +21,7 @@ import type {
   PaneSendKeysRequest,
   PaneSplitRequest,
   ReportAgentRequest,
+  ReportMetadataRequest,
   RunCommandRequest,
   RunCommandResult,
   WaitAgentRequest,
@@ -41,6 +43,21 @@ interface SocketEnvelope {
 }
 
 /**
+ * CA-014：pane.read 响应归一化——与 CLI 传输统一输出上限：
+ * 上报服务器 truncated 标志（pane_read 分支真实字段），并做客户端 1 MiB 兜底截断
+ * （服务器可能不截断）。
+ */
+function capReadText(read: { text?: string; truncated?: boolean } | undefined): { text: string; truncated: boolean } {
+  let text = read?.text ?? ''
+  let truncated = read?.truncated === true
+  if (text.length > MAX_CLI_OUTPUT_BYTES) {
+    text = text.slice(0, MAX_CLI_OUTPUT_BYTES)
+    truncated = true
+  }
+  return { text, truncated }
+}
+
+/**
  * Socket 传输适配器（DESIGN.md §7.2）。
  *
  * 实测协议行为（herdr 0.8.0 / protocol 19）：
@@ -53,7 +70,7 @@ export class SocketHerdrClient extends HerdrClient {
   /** 订阅长连接（events.subscribe 专用）。 */
   private subSock: Socket | null = null
   private subBuffer = ''
-  private readonly eventHandlers = new Set<(event: Record<string, unknown>) => void>()
+  private readonly eventHandlers = new Set<(event: unknown) => void>()
   private closed = false
 
   constructor(ctx: Context, private readonly options: SocketAdapterOptions) {
@@ -80,18 +97,24 @@ export class SocketHerdrClient extends HerdrClient {
 
   async snapshot(): Promise<HerdrSnapshot> {
     const { result } = await this.callOnce('session.snapshot', {})
-    const snapshot = (result as { snapshot?: HerdrSnapshot } | undefined)?.snapshot
-    if (!snapshot) throw new HerdrCliError('HERDR_PROTOCOL', 'session.snapshot response missing snapshot')
-    return snapshot
+    // CA-004：由 fixture 生成的 session_snapshot 分支类型；agents 归一化 status
+    const raw = (result as HerdrResultMap['session.snapshot'] | undefined)?.snapshot
+    if (!raw) throw new HerdrCliError('HERDR_PROTOCOL', 'session.snapshot response missing snapshot')
+    const agents = raw.agents.map(a => ({
+      ...a,
+      status: (a.agent_status ?? (a as unknown as { status?: AgentStatus }).status ?? 'unknown') as AgentStatus,
+    })) as HerdrAgentInfo[]
+    return { ...raw, agents } as HerdrSnapshot
   }
 
   async listAgents(filter?: AgentFilter): Promise<HerdrAgentInfo[]> {
     const { result } = await this.callOnce('agent.list', {})
-    const raw = Array.isArray((result as { agents?: unknown } | undefined)?.agents)
-      ? (result as { agents: Array<Record<string, unknown>> }).agents
-      : []
+    const raw = (result as HerdrResultMap['agent.list'] | undefined)?.agents ?? []
     // 协议状态字段是 agent_status（env-findings §11）；归一化到 status 便于消费
-    const agents = raw.map(a => ({ ...a, status: (a.agent_status ?? a.status) as AgentStatus })) as HerdrAgentInfo[]
+    const agents = raw.map(a => ({
+      ...a,
+      status: (a.agent_status ?? (a as unknown as { status?: AgentStatus }).status ?? 'unknown') as AgentStatus,
+    })) as HerdrAgentInfo[]
     if (!filter) return agents
     return agents.filter(a => {
       if (filter.workspace_id && a.workspace_id !== filter.workspace_id) return false
@@ -111,27 +134,38 @@ export class SocketHerdrClient extends HerdrClient {
         target_pane_id: req.pane_id ?? null,
         workspace_id: req.workspace_id ?? null,
       })
-      const pane = (result as { pane?: { pane_id?: string } } | undefined)?.pane
+      const pane = (result as HerdrResultMap['pane.split'] | undefined)?.pane
       if (!pane?.pane_id) throw new HerdrCliError('HERDR_PROTOCOL', 'pane.split response missing pane_id')
       paneId = pane.pane_id
     }
     // 发送前记录 pane 快照基线（用于裁剪终端历史噪音）
     let baseline = ''
     try {
-      baseline = await this.readPaneText(paneId)
+      baseline = (await this.readPaneText(paneId)).text
     } catch {
       // 新 pane 可能尚未就绪；读不到基线则不裁剪
     }
     // 发送命令文本 + 回车执行（send_text 原样发送；POSIX shell 用 \n）
     await this.callOnce('pane.send_text', { pane_id: paneId, text: req.command + '\n' })
-    const { output, timedOut } = await pollPaneUntilStable(
-      id => this.readPaneText(id),
+    // CA-014：任一轮 pane read 被截断（服务器 truncated 或客户端兜底）都如实上报
+    let truncated = false
+    const readPane = async (id: string): Promise<string> => {
+      const r = await this.readPaneText(id)
+      if (r.truncated) truncated = true
+      return r.text
+    }
+    const { output, status } = await pollPaneUntilStable(
+      readPane,
       paneId,
       req.wait_ms ?? this.options.timeoutMs,
       signal,
       { baseline },
     )
-    return { kind: 'completed', pane_id: paneId, exit_code: null, output, truncated: false, timed_out: timedOut }
+    // CA-011：轮询期取消不是超时——以 HERDR_ABORTED 抛出
+    if (status === 'aborted') {
+      throw new HerdrCliError('HERDR_ABORTED', 'runCommand aborted while waiting for pane output')
+    }
+    return { kind: 'completed', pane_id: paneId, exit_code: null, output, truncated, timed_out: status === 'timed_out' }
   }
 
   async waitAgent(req: WaitAgentRequest, signal: AbortSignal): Promise<WaitAgentResult> {
@@ -143,12 +177,15 @@ export class SocketHerdrClient extends HerdrClient {
         until: req.until,
         timeout_ms: timeoutMs,
       }, { timeoutMs: timeoutMs + 10_000, signal })
-      const res = (result ?? {}) as { status?: string; agent?: string; message?: string | null }
+      // CA-004：实测 raw socket 的 agent.wait 也返回 agent_info 分支（{ agent, type: 'agent_info' }），
+      // 状态字段为 agent.agent_status（fixture 生成类型，替换宽松强转）
+      const res = result as HerdrResultMap['agent.wait'] | undefined
+      const agent = res?.agent
       return {
         kind: 'completed',
-        status: (res.status ?? req.until[0]) as AgentStatus,
-        agent: res.agent,
-        message: res.message ?? undefined,
+        status: (agent?.agent_status ?? req.until[0]) as AgentStatus,
+        agent: agent?.agent ?? agent?.name ?? undefined,
+        pane_id: agent?.pane_id ?? undefined,
         waited_ms: Date.now() - start,
       }
     } catch (err) {
@@ -167,8 +204,8 @@ export class SocketHerdrClient extends HerdrClient {
 
   async workspaceCreate(req: WorkspaceCreateRequest): Promise<{ workspace_id: string; pane_id?: string }> {
     const { result } = await this.callOnce('workspace.create', { cwd: req.cwd ?? null, label: req.label ?? null, env: req.env ?? undefined })
-    const res = (result ?? {}) as { workspace?: { workspace_id?: string }; root_pane?: { pane_id?: string } }
-    if (!res.workspace?.workspace_id) throw new HerdrCliError('HERDR_PROTOCOL', 'workspace.create response missing workspace_id')
+    const res = result as HerdrResultMap['workspace.create'] | undefined
+    if (!res?.workspace?.workspace_id) throw new HerdrCliError('HERDR_PROTOCOL', 'workspace.create response missing workspace_id')
     return {
       workspace_id: res.workspace.workspace_id,
       ...res.root_pane?.pane_id ? { pane_id: res.root_pane.pane_id } : {},
@@ -184,7 +221,7 @@ export class SocketHerdrClient extends HerdrClient {
       target_pane_id: req.pane_id ?? null,
       workspace_id: req.workspace_id ?? null,
     })
-    const pane = (result as { pane?: { pane_id?: string } } | undefined)?.pane
+    const pane = (result as HerdrResultMap['pane.split'] | undefined)?.pane
     if (!pane?.pane_id) throw new HerdrCliError('HERDR_PROTOCOL', 'pane.split response missing pane_id')
     return { pane_id: pane.pane_id }
   }
@@ -197,15 +234,16 @@ export class SocketHerdrClient extends HerdrClient {
     await this.callOnce('pane.send_keys', { pane_id: req.pane_id, keys: req.keys })
   }
 
-  async paneRead(req: PaneReadRequest): Promise<{ text: string }> {
+  async paneRead(req: PaneReadRequest): Promise<{ text: string; truncated: boolean }> {
     const { result } = await this.callOnce('pane.read', {
       pane_id: req.pane_id,
       source: req.source ?? 'recent',
       lines: req.lines ?? null,
       format: req.format ?? 'text',
     })
-    // 响应结构：{ type: 'pane_read', read: { text, ... } }
-    return { text: (result as { read?: { text?: string } } | undefined)?.read?.text ?? '' }
+    // 响应结构：{ type: 'pane_read', read: { text, truncated, ... } }（CA-004：pane_read 分支生成类型）
+    // CA-014：与 CLI 传输统一——上报服务器 truncated 标志，并做客户端侧 1 MiB 兜底上限
+    return capReadText((result as HerdrResultMap['pane.read'] | undefined)?.read)
   }
 
   async paneLayout(req: PaneLayoutRequest): Promise<unknown> {
@@ -233,9 +271,9 @@ export class SocketHerdrClient extends HerdrClient {
         ? { until: req.until ?? null, timeout_ms: req.timeout_ms ?? null }
         : null,
     }, { signal })
-    // 协议 envelope：状态在 result.agent.agent_status
-    const res = (result ?? {}) as { agent?: { agent_status?: string } }
-    const status = res.agent?.agent_status
+    // 协议 envelope：状态在 result.agent.agent_status（agent_prompted 分支，CA-004 生成类型）
+    const res = result as HerdrResultMap['agent.prompt'] | undefined
+    const status = res?.agent?.agent_status
     return {
       submitted: true,
       ...status !== undefined ? { status } : {},
@@ -271,6 +309,18 @@ export class SocketHerdrClient extends HerdrClient {
     })
   }
 
+  async reportMetadata(req: ReportMetadataRequest): Promise<void> {
+    // CA-006 M3-03：raw socket pane.report_metadata（display-only；ttl_ms 控制过期）
+    await this.callOnce('pane.report_metadata', {
+      pane_id: req.pane_id,
+      source: req.source,
+      agent: req.agent ?? null,
+      title: req.title ?? null,
+      tokens: req.tokens ?? undefined,
+      ttl_ms: req.ttl_ms ?? null,
+    })
+  }
+
   async clearAgentAuthority(req: ClearAgentAuthorityRequest): Promise<void> {
     await this.callOnce('pane.clear_agent_authority', {
       pane_id: req.pane_id,
@@ -283,7 +333,7 @@ export class SocketHerdrClient extends HerdrClient {
   // -------------------------------------------------------------------------
 
   /** 注册订阅事件处理器；返回退订函数。 */
-  onEvent(handler: (event: Record<string, unknown>) => void): () => void {
+  onEvent(handler: (event: unknown) => void): () => void {
     this.eventHandlers.add(handler)
     return () => this.eventHandlers.delete(handler)
   }
@@ -302,7 +352,21 @@ export class SocketHerdrClient extends HerdrClient {
       this.subSock = sock
       sock.setEncoding('utf8')
       let responded = false
+      let settled = false
+      // CA-008：握手超时（默认配置 timeoutMs）——服务端无响应时销毁连接并拒绝，不留悬挂 promise
+      const finish = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        fn()
+      }
+      const timer = setTimeout(() => {
+        sock.destroy()
+        if (this.subSock === sock) this.subSock = null
+        finish(() => reject(new HerdrCliError('HERDR_TIMEOUT', 'events.subscribe handshake timed out')))
+      }, this.options.timeoutMs)
       sock.on('connect', () => {
+        if (settled) return
         sock.write(JSON.stringify({ id: 'sub_1', method: 'events.subscribe', params: { subscriptions } }) + '\n')
       })
       sock.on('data', (chunk: string | Buffer) => {
@@ -322,31 +386,39 @@ export class SocketHerdrClient extends HerdrClient {
           if (parsed.id && !responded) {
             responded = true
             if (parsed.error) {
-              reject(new HerdrCliError('HERDR_ERROR', `${parsed.error.code ?? 'unknown'}: ${parsed.error.message ?? ''}`))
+              const err = parsed.error
+              sock.destroy()
+              if (this.subSock === sock) this.subSock = null
+              finish(() => reject(new HerdrCliError('HERDR_ERROR', `${err.code ?? 'unknown'}: ${err.message ?? ''}`)))
             } else {
-              resolve()
+              // 握手成功：长连接保持，后续无 id 的行都是订阅事件
+              finish(() => resolve())
             }
             continue
           }
           if (!parsed.id) {
             for (const handler of this.eventHandlers) {
-              try { handler(parsed as Record<string, unknown>) } catch { /* 处理器容错 */ }
+              try { handler(parsed) } catch { /* 处理器容错 */ }
             }
           }
         }
       })
       sock.on('error', (err: NodeJS.ErrnoException) => {
-        if (!responded) {
-          responded = true
-          this.subSock = null
-          const message = err.code === 'ENOENT'
-            ? `herdr socket not found: '${this.options.socketPath}' (is the herdr server running?)`
-            : `failed to connect to herdr socket: ${err.message}`
-          reject(new HerdrCliError('HERDR_UNAVAILABLE', message))
-        }
+        if (settled) return
+        sock.destroy()
+        if (this.subSock === sock) this.subSock = null
+        const message = err.code === 'ENOENT'
+          ? `herdr socket not found: '${this.options.socketPath}' (is the herdr server running?)`
+          : `failed to connect to herdr socket: ${err.message}`
+        finish(() => reject(new HerdrCliError('HERDR_UNAVAILABLE', message)))
       })
       sock.on('close', () => {
-        this.subSock = null
+        // CA-011：只清除“自己”的引用——旧 socket 的 close 不得覆盖新订阅的 subSock
+        if (this.subSock === sock) this.subSock = null
+        // CA-008：握手完成前断开 → 拒绝（此前会悬挂）
+        if (!responded && !settled) {
+          finish(() => reject(new HerdrCliError('HERDR_UNAVAILABLE', 'socket closed before subscribe response')))
+        }
       })
     })
   }
@@ -357,10 +429,12 @@ export class SocketHerdrClient extends HerdrClient {
 
   // 读取 scrollback（recent 快照）：visible 只是当前视口（新输出会顶掉旧行），
   // recent 返回完整历史，配合 runCommand 的基线裁剪可拿到干净的"本次命令输出"。
-  private async readPaneText(paneId: string): Promise<string> {
+  // 读取 scrollback（recent 快照）：visible 只是当前视口（新输出会顶掉旧行），
+  // recent 返回完整历史，配合 runCommand 的基线裁剪可拿到干净的"本次命令输出"。
+  // CA-014：与 CLI 传输统一——上报服务器 truncated 标志 + 客户端 1 MiB 兜底上限。
+  private async readPaneText(paneId: string): Promise<{ text: string; truncated: boolean }> {
     const { result } = await this.callOnce('pane.read', { pane_id: paneId, source: 'recent', lines: 500 })
-    // 响应结构：{ type: 'pane_read', read: { text, ... } }
-    return (result as { read?: { text?: string } } | undefined)?.read?.text ?? ''
+    return capReadText((result as HerdrResultMap['pane.read'] | undefined)?.read)
   }
 
   /** 一次性请求-响应调用（服务器每个连接只服务一个请求后关闭）。 */

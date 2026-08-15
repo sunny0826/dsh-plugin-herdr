@@ -5,6 +5,10 @@ import { execFileSync } from 'node:child_process'
 import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../../lib/index.mjs'
 import { apply as applyClient } from '../../lib/client-entry.mjs'
+import { assertPreflight } from './preflight.mjs'
+
+// CA-009：前置条件（herdr CLI + lib 构建 + server running）；不满足 → 明确 SKIP
+assertPreflight()
 
 const CONFIG = {
   cliPath: 'herdr',

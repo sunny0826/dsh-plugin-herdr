@@ -1,0 +1,54 @@
+# CA-010：CI 质量门。
+# - quality job（PR 必过）：typecheck + gen-types 漂移检查 + 单测；
+# - integration job（optional，continue-on-error）：真实 herdr 集成；
+#   无 herdr/未启动 server 时 test/integration/*.mjs 会打印 SKIPPED 并退出 0（CA-009）。
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    name: Quality gate (typecheck + gen-types + unit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Enable pnpm
+        run: corepack enable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Generated types drift check
+        run: pnpm gen:types:check
+      - name: Unit tests
+        run: pnpm test
+
+  integration:
+    name: Integration (real herdr, optional)
+    runs-on: ubuntu-latest
+    # 真实 herdr 环境不是每次 PR 都可用：失败不阻塞合并，但输出会暴露问题
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Enable pnpm
+        run: corepack enable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install herdr CLI (best effort)
+        run: |
+          curl -fsSL https://herdr.dev/install.sh | sh || echo 'herdr install failed (integration will SKIP)'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Start herdr server (best effort)
+        run: herdr server || echo 'herdr server start failed (integration will SKIP)'
+      - name: Integration tests
+        run: pnpm test:integration

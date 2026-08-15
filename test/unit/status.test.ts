@@ -126,3 +126,93 @@ test('startHerdrServer: timeout returns last probe (not running)', async () => {
   assert.equal(info.running, false)
   assert.ok(Date.now() - started >= 490, 'at least one poll interval elapsed (clock-jitter tolerant)')
 })
+
+// ---------------------------------------------------------------------------
+// CA-012：tracker 轮询纪律（首次立即 tick / 单飞 / stop 取消 / stale 诊断）
+// ---------------------------------------------------------------------------
+
+import { Context } from '@deepseek-ai/cordis'
+import { HerdrStatusTracker } from '../../src/status.ts'
+import type { HerdrClient } from '../../src/client/index.ts'
+
+const EMPTY_SNAP = {
+  version: '0.8.0', protocol: 19,
+  workspaces: [], tabs: [], panes: [], layouts: [], agents: [],
+  focused_pane_id: null, focused_tab_id: null, focused_workspace_id: null,
+}
+
+function makeTrackerClient(opts: { snapshotDelayMs?: number; snapshotError?: boolean } = {}) {
+  const calls = { snapshot: 0, listAgents: 0, paneRead: 0 }
+  const client = {
+    snapshot: async () => {
+      calls.snapshot++
+      if (opts.snapshotDelayMs) await new Promise(r => setTimeout(r, opts.snapshotDelayMs))
+      if (opts.snapshotError) throw new Error('boom')
+      return EMPTY_SNAP
+    },
+    listAgents: async () => { calls.listAgents++; return [] },
+    paneRead: async () => { calls.paneRead++; return { text: '', truncated: false } },
+  } as unknown as HerdrClient
+  return { client, calls }
+}
+
+const makeTracker = (client: HerdrClient, opts: { pollIntervalMs?: number; staleThresholdMs?: number } = {}) =>
+  new HerdrStatusTracker(new Context(), client, 'herdr', opts)
+
+const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+test('CA-012: first tick is immediate (poll happens before the first interval)', async () => {
+  const { client, calls } = makeTrackerClient()
+  const tracker = makeTracker(client, { pollIntervalMs: 60_000 })
+  tracker.start()
+  await sleepMs(100)
+  tracker.stop()
+  assert.ok(calls.snapshot >= 1, 'snapshot polled immediately without waiting 60s interval')
+  assert.ok(calls.listAgents >= 1, 'agent polled immediately')
+})
+
+test('CA-012: single-flight guard skips overlapping cycles (bounded concurrency)', async () => {
+  const { client, calls } = makeTrackerClient({ snapshotDelayMs: 300 })
+  const tracker = makeTracker(client, { pollIntervalMs: 50 })
+  tracker.start()
+  await sleepMs(600)
+  tracker.stop()
+  // 无 guard：12 个 tick × 并发调用；单飞后每次周期 ~300ms → 约 2 次
+  assert.ok(calls.snapshot >= 1, 'at least one cycle ran')
+  assert.ok(calls.snapshot <= 3, `expected bounded cycles, got ${calls.snapshot}`)
+})
+
+test('CA-012: stop cancels in-flight cycle (no further calls, no state mutation)', async () => {
+  const { client, calls } = makeTrackerClient({ snapshotDelayMs: 200 })
+  const tracker = makeTracker(client, { pollIntervalMs: 50 })
+  tracker.start()
+  await sleepMs(80) // 首个周期在途（snapshot 200ms）
+  tracker.stop()
+  const atStop = { ...calls }
+  await sleepMs(400)
+  tracker.stop() // 幂等
+  assert.deepEqual(calls, atStop, 'no client calls after stop (in-flight aborted)')
+  assert.equal(tracker.snapshot().stale, true, 'never completed a clean cycle → stale')
+})
+
+test('CA-012: snapshot exposes last_error and stale diagnostics', async () => {
+  const { client } = makeTrackerClient({ snapshotError: true })
+  const tracker = makeTracker(client, { pollIntervalMs: 60_000, staleThresholdMs: 5000 })
+  tracker.start()
+  await sleepMs(150)
+  tracker.stop()
+  const snap = tracker.snapshot()
+  assert.match(snap.last_error ?? '', /topology poll failed: boom/)
+  assert.equal(snap.stale, true, 'topology failed → last success never advanced → stale')
+})
+
+test('CA-012: healthy cycles report not stale', async () => {
+  const { client } = makeTrackerClient()
+  const tracker = makeTracker(client, { pollIntervalMs: 60_000, staleThresholdMs: 5000 })
+  tracker.start()
+  await sleepMs(150)
+  tracker.stop()
+  const snap = tracker.snapshot()
+  assert.equal(snap.last_error, null, 'no errors on healthy polls')
+  assert.equal(snap.stale, false, 'clean cycle completed → not stale')
+})

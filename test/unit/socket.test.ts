@@ -101,14 +101,14 @@ test('socket: subscription keeps connection open and dispatches events', async (
   })
   try {
     const client = makeClient(path)
-    const events: Record<string, unknown>[] = []
+    const events: unknown[] = []
     client.onEvent(e => events.push(e))
     await client.subscribe([{ type: 'workspace.created' }])
     assert.equal(client.connected, true)
     await new Promise(res => setTimeout(res, 80))
     assert.equal(events.length, 1)
-    assert.equal(events[0].type, 'workspace.created')
-    assert.equal(events[0].workspace_id, 'w9')
+    assert.equal((events[0] as Record<string, unknown>).type, 'workspace.created')
+    assert.equal((events[0] as Record<string, unknown>).workspace_id, 'w9')
     client.close()
   } finally {
     server.close(); rmSync(dir, { recursive: true, force: true })
@@ -176,6 +176,90 @@ test('socket: close() tears down the subscription connection', async () => {
     assert.equal(client.connected, true)
     client.close()
     assert.equal(client.connected, false)
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CA-011: socket runCommand abort during polling rejects HERDR_ABORTED (not timed_out)', async () => {
+  let requests = 0
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    requests++
+    if (req.method === 'pane.split') replyAndClose(conn, req, { type: 'pane_info', pane: { pane_id: 'w1:p1' } })
+    else if (req.method === 'pane.send_text') replyAndClose(conn, req, { type: 'ok' })
+    else if (req.method === 'pane.read') replyAndClose(conn, req, { type: 'pane_read', read: { text: 'out', pane_id: 'w1:p1' } })
+    else replyAndClose(conn, req, {})
+  })
+  try {
+    const client = makeClient(path)
+    const ac = new AbortController()
+    const p = client.runCommand({ command: 'sleep 5', wait_ms: 10_000 }, ac.signal)
+    // 等 split + send_text + 首轮 poll read 完成（interval 500ms）
+    await new Promise(res => setTimeout(res, 700))
+    ac.abort()
+    await assert.rejects(() => p, (err: Error) => {
+      assert.ok(err instanceof HerdrCliError)
+      assert.equal(err.code, 'HERDR_ABORTED')
+      return true
+    })
+    assert.ok(requests >= 3, 'split + send_text + at least one read happened')
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// CA-014：socket 输出上限与 CLI 传输统一
+// ---------------------------------------------------------------------------
+
+test('CA-014: socket paneRead reports server-truncated flag and client-side cap', async () => {
+  const big = 'x'.repeat(2 * 1024 * 1024 + 100)
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    if (req.method === 'pane.read') replyAndClose(conn, req, { type: 'pane_read', read: { text: big, pane_id: 'w1:p1', truncated: false } })
+    else replyAndClose(conn, req, {})
+  })
+  try {
+    const client = makeClient(path)
+    // 服务器未截断但超 1 MiB → 客户端兜底截断并置 truncated
+    const capped = await client.paneRead({ pane_id: 'w1:p1' })
+    assert.equal(capped.truncated, true, 'client-side cap must set truncated')
+    assert.ok(capped.text.length <= 1024 * 1024)
+    // 服务器已截断（小文本 + truncated:true）→ 如实透传
+    const { path: p2, server: s2, dir: d2 } = await startFakeServer((conn, req, close) => {
+      if (req.method === 'pane.read') replyAndClose(conn, req, { type: 'pane_read', read: { text: 'small', pane_id: 'w1:p1', truncated: true } })
+      else replyAndClose(conn, req, {})
+    })
+    try {
+      const c2 = makeClient(p2)
+      const r2 = await c2.paneRead({ pane_id: 'w1:p1' })
+      assert.equal(r2.text, 'small')
+      assert.equal(r2.truncated, true, 'server-reported truncated must pass through')
+      c2.close()
+    } finally {
+      s2.close(); rmSync(d2, { recursive: true, force: true })
+    }
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CA-014: socket runCommand reports truncated when any poll read is truncated', async () => {
+  const read = { type: 'pane_read', read: { text: 'z'.repeat(1024 * 1024 + 50), pane_id: 'w1:p1', truncated: false } }
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    if (req.method === 'pane.split') replyAndClose(conn, req, { type: 'pane_info', pane: { pane_id: 'w1:p1' } })
+    else if (req.method === 'pane.send_text') replyAndClose(conn, req, { type: 'ok' })
+    else if (req.method === 'pane.read') replyAndClose(conn, req, read)
+    else replyAndClose(conn, req, {})
+  })
+  try {
+    const client = makeClient(path)
+    const res = await client.runCommand({ command: 'cat huge', wait_ms: 8000 }, new AbortController().signal)
+    assert.equal(res.kind, 'completed')
+    if (res.kind === 'completed') {
+      assert.equal(res.truncated, true, 'truncated flag must reach the runCommand result')
+      assert.ok(res.output.length <= 1024 * 1024)
+    }
   } finally {
     server.close(); rmSync(dir, { recursive: true, force: true })
   }

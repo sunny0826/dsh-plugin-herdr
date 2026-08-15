@@ -32,8 +32,11 @@
   "scripts": {
     "build": "tsdown && tsdown --config tsdown.web.config.ts",
     "gen:types": "node scripts/gen-types.mjs",
+    "gen:types:check": "node scripts/gen-types.mjs --check",
     "test": "pnpm build && node --experimental-transform-types --test \"test/unit/*.test.ts\"",
+    "test:integration": "pnpm build && node test/integration/run.mjs && node test/integration/extended.mjs && node test/integration/events.mjs",
     "typecheck": "tsc --noEmit",
+    "quality": "pnpm typecheck && pnpm gen:types:check && pnpm test",
     "prepare": "pnpm build"
   },
   "dsh": {

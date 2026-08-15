@@ -4,6 +4,19 @@
 // 保持编译期契约（与 SlotsApi 同一策略）。
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Button, Pill, StateDot, TerminalBlock } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  buildGroups,
+  comparePaneId,
+  compareWorkspaceId,
+  computeSnapPosition,
+  createStatusStore,
+  dotState,
+  formatTime,
+  isDragMovement,
+  parseStartResponse,
+  shouldAutoExpand,
+  toggleCollapse,
+} from './client-logic.ts'
 
 // ---------------------------------------------------------------------------
 // primitives 宽松类型桥（运行时由 ModuleLoader 解析真实实现）
@@ -361,7 +374,7 @@ export interface HerdrStatusSnapshot {
 }
 
 // ---------------------------------------------------------------------------
-// 数据获取：模块级共享轮询（多组件订阅同一数据源）
+// 数据获取：模块级共享轮询（多组件订阅同一数据源；逻辑见 client-logic.ts）
 // ---------------------------------------------------------------------------
 
 async function fetchStatus(signal: AbortSignal): Promise<HerdrStatusSnapshot> {
@@ -370,78 +383,22 @@ async function fetchStatus(signal: AbortSignal): Promise<HerdrStatusSnapshot> {
   return (await resp.json()) as HerdrStatusSnapshot
 }
 
-interface StatusStore {
-  snap: HerdrStatusSnapshot | null
-  error: string | null
-  started: boolean
-  listeners: Set<() => void>
-  controller: AbortController | null
-  timer: ReturnType<typeof setInterval> | null
-}
-
-const statusStore: StatusStore = {
-  snap: null,
-  error: null,
-  started: false,
-  listeners: new Set(),
-  controller: null,
-  timer: null,
-}
-
-async function pollOnce(): Promise<void> {
-  const controller = statusStore.controller
-  if (!controller) return
-  try {
-    const s = await fetchStatus(controller.signal)
-    statusStore.snap = s
-    statusStore.error = null
-  } catch (e) {
-    if (controller.signal.aborted) return
-    statusStore.error = e instanceof Error ? e.message : String(e)
-  }
-  for (const l of statusStore.listeners) l()
-}
-
-function ensurePolling(): void {
-  if (statusStore.started) return
-  statusStore.started = true
-  statusStore.controller = new AbortController()
-  void pollOnce()
-  statusStore.timer = setInterval(() => void pollOnce(), 2000)
-}
-
-function stopPolling(): void {
-  if (!statusStore.started) return
-  statusStore.started = false
-  statusStore.controller?.abort()
-  statusStore.controller = null
-  if (statusStore.timer) clearInterval(statusStore.timer)
-  statusStore.timer = null
-}
-
-function subscribeStatus(listener: () => void): () => void {
-  statusStore.listeners.add(listener)
-  ensurePolling()
-  return () => {
-    statusStore.listeners.delete(listener)
-    if (statusStore.listeners.size === 0) stopPolling()
-  }
-}
+const statusStore = createStatusStore<HerdrStatusSnapshot>({ fetch: fetchStatus })
 
 function useHerdrStatus(): { snap: HerdrStatusSnapshot | null; error: string | null; refresh: () => void } {
-  const [snap, setSnap] = useState<HerdrStatusSnapshot | null>(statusStore.snap)
-  const [error, setError] = useState<string | null>(statusStore.error)
+  const [snap, setSnap] = useState<HerdrStatusSnapshot | null>(statusStore.getSnap())
+  const [error, setError] = useState<string | null>(statusStore.getError())
   useEffect(() => {
     const update = () => {
-      setSnap(statusStore.snap)
-      setError(statusStore.error)
+      setSnap(statusStore.getSnap())
+      setError(statusStore.getError())
     }
-    const unsubscribe = subscribeStatus(update)
+    const unsubscribe = statusStore.subscribe(update)
     update()
     return unsubscribe
   }, [])
   const refresh = useCallback(() => {
-    void pollOnce()
+    statusStore.refresh()
   }, [])
   return { snap, error, refresh }
 }
@@ -454,7 +411,7 @@ function useHerdrStart(): { starting: boolean; startError: string | null; start:
     setStartError(null)
     try {
       const resp = await fetch('/herdr-start', { method: 'POST' })
-      const body = (await resp.json()) as { ok: boolean; error?: string }
+      const body = await parseStartResponse(resp)
       if (!body.ok) {
         setStartError(body.error ?? `herdr-start HTTP ${resp.status}`)
         return false
@@ -470,51 +427,9 @@ function useHerdrStart(): { starting: boolean; startError: string | null; start:
   return { starting, startError, start }
 }
 
-function formatTime(ts: number): string {
-  const d = new Date(ts)
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-}
-
-/** pane_id 自然排序（w8:p2 < w8:p10）。 */
-function comparePaneId(a: string, b: string): number {
-  const [wa, pa] = a.split(':')
-  const [wb, pb] = b.split(':')
-  if (wa !== wb) return wa < wb ? -1 : 1
-  const na = Number((pa ?? '').replace(/\D/g, '')) || 0
-  const nb = Number((pb ?? '').replace(/\D/g, '')) || 0
-  return na - nb
-}
-
-/** workspace_id 自然排序（w2 < w10）。 */
-function compareWorkspaceId(a: string, b: string): number {
-  const na = Number(a.replace(/\D/g, '')) || 0
-  const nb = Number(b.replace(/\D/g, '')) || 0
-  if (na !== nb) return na - nb
-  return a < b ? -1 : 1
-}
-
-/** agent 状态 → StateDot 状态（working=ongoing 矩阵动画 / blocked=error / 其余 done）。 */
-function dotState(status: string | undefined): string {
-  if (status === 'working') return 'ongoing'
-  if (status === 'blocked') return 'error'
-  return 'done'
-}
-
-/** topology → 按 workspace 分组的 pane 列表（Herdr 视图与右侧面板共用）。 */
-function buildGroups(topology: HerdrTopology | undefined) {
-  return (topology?.workspaces ?? [])
-    .map(ws => ({
-      workspace: ws,
-      panes: (topology?.panes ?? [])
-        .filter(p => p.workspace_id === ws.workspace_id)
-        .sort((a, b) => comparePaneId(a.pane_id, b.pane_id)),
-      tabs: (topology?.tabs ?? []).filter(t => t.workspace_id === ws.workspace_id),
-    }))
-    .sort((a, b) => compareWorkspaceId(a.workspace.workspace_id, b.workspace.workspace_id))
-}
-
 // ---------------------------------------------------------------------------
 // 浮动拖动：面板/折叠按钮可拖动，松手水平吸附到最近的页面边界
+// （纯数学见 client-logic.ts 的 computeSnapPosition / isDragMovement）
 // ---------------------------------------------------------------------------
 
 interface DragHandlers {
@@ -562,7 +477,7 @@ function useFloatingDrag<T extends HTMLElement>(
     if (!d) return
     const dx = e.clientX - d.startX
     const dy = e.clientY - d.startY
-    if (!d.moved && Math.abs(dx) + Math.abs(dy) > 4) d.moved = true
+    if (!d.moved && isDragMovement(dx, dy)) d.moved = true
     if (d.moved) setPos({ x: d.baseX + dx, y: d.baseY + dy })
   }
 
@@ -579,21 +494,22 @@ function useFloatingDrag<T extends HTMLElement>(
       const vh = window.innerHeight
       const x = d.baseX + (e.clientX - d.startX)
       const y = d.baseY + (e.clientY - d.startY)
-      const w = el.offsetWidth
-      const h = el.offsetHeight
       // 分左右吸附：右侧 → 视口右边界；左侧 → 侧边栏右缘（AppFrame 的
       // sidebar col，overlay 层的父级 frame 的首个子元素）
-      let snapX: number
-      if (x + w / 2 < vw / 2) {
+      let sidebarW = 0
+      if (x + el.offsetWidth / 2 < vw / 2) {
         const overlay = document.querySelector('[data-shell-overlay]')
         const sidebar = overlay?.parentElement?.firstElementChild
-        const sidebarW = sidebar instanceof HTMLElement ? sidebar.offsetWidth : 0
-        snapX = sidebarW + SNAP
-      } else {
-        snapX = vw - w - SNAP
+        sidebarW = sidebar instanceof HTMLElement ? sidebar.offsetWidth : 0
       }
-      const snapY = Math.max(SNAP, Math.min(y, vh - h - SNAP))
-      setPos({ x: Math.max(0, Math.min(snapX, vw - w)), y: snapY })
+      setPos(computeSnapPosition({
+        x, y,
+        w: el.offsetWidth,
+        h: el.offsetHeight,
+        vw, vh,
+        sidebarW,
+        snap: SNAP,
+      }))
     }
   }
 
@@ -1030,7 +946,7 @@ function HerdrPaneList() {
   // 自动展开：本对话 pane 状态 working 边沿（非 working → working 且处于折叠）
   const selfStatus = snap?.agents.find(a => a.pane_id === selfPaneId)?.status
   useEffect(() => {
-    if (selfStatus === 'working' && prevStatus.current !== 'working' && collapsed) {
+    if (shouldAutoExpand(prevStatus.current, selfStatus, collapsed)) {
       setCollapsed(false)
     }
     if (selfStatus !== undefined) prevStatus.current = selfStatus
@@ -1063,12 +979,7 @@ function HerdrPaneList() {
   const wsCount = snap?.topology?.workspaces.length ?? 0
 
   const toggleWs = (id: string) => {
-    setCollapsedWs(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+    setCollapsedWs(prev => toggleCollapse(prev, id))
   }
 
   return (

@@ -178,3 +178,79 @@ test('session-mode: context dispose closes created panes', async () => {
   assert.deepEqual(calls.closes, ['w1:p3'], 'created pane closed on context dispose')
   assert.equal(calls.clears.length, 0)
 })
+
+// ---------------------------------------------------------------------------
+// CA-013：bind/dispose 竞态 + registry key 归属
+// ---------------------------------------------------------------------------
+
+import { getBindingRegistry } from '../../src/binding-registry.ts'
+
+function makeSlowHarness(snapshotDelayMs = 80) {
+  const calls = { splits: [] as Call[], wsCreates: [] as Call[], closes: [] as string[], reports: [] as Call[] }
+  const herdr = {
+    snapshot: async () => {
+      await new Promise(r => setTimeout(r, snapshotDelayMs))
+      return { focused_pane_id: 'w1:p1' }
+    },
+    paneSplit: async (req: Call) => { calls.splits.push(req); return { pane_id: 'w1:p9' } },
+    workspaceCreate: async () => { calls.wsCreates.push({}); return { workspace_id: 'wN', pane_id: 'wN:p1' } },
+    reportAgent: async (req: Call) => { calls.reports.push(req) },
+    clearAgentAuthority: async () => {},
+    paneClose: async (paneId: string) => { calls.closes.push(paneId) },
+  }
+  const ctx = new Context()
+  ctx.provide('herdr', herdr)
+  sessionMode.apply(ctx, { paneId: '', source: 'dsh:test', label: 'dsh' })
+  return { ctx, calls }
+}
+
+test('CA-013: dispose before bind completes leaves no pane or registry entry', async () => {
+  const registry = getBindingRegistry()
+  const { ctx, calls } = makeSlowHarness()
+  // agent/created 触发异步 bind（snapshot 80ms 在途）
+  ctx.emit({} as any, 'agent/created', { agent: { id: 'sess-race' } })
+  // bind 完成前 agent 被 dispose
+  ctx.emit({} as any, 'agent/disposed', { agent: { id: 'sess-race' } })
+  await new Promise(r => setTimeout(r, 200))
+  // split 创建了 pane，但立即被回收：不遗留 registry/绑定，不上报 idle
+  assert.equal(calls.splits.length, 1, 'bind still ran to create the pane')
+  assert.deepEqual(calls.closes, ['w1:p9'], 'pane created mid-race must be closed')
+  assert.equal(registry.has('sess-race'), false, 'no registry entry for disposed agent')
+  assert.equal(calls.reports.length, 0, 'no idle report for a disposed agent')
+  // 事件链不受影响
+  const resolved = await ctx.waterfall({} as any, 'agent/request', { agent: { id: 'sess-race' } }, () => 'cfg')
+  assert.equal(resolved, 'cfg')
+  void ctx.fiber.dispose()
+})
+
+test('CA-013: dispose after bind completes still cleans up normally', async () => {
+  const registry = getBindingRegistry()
+  const { ctx, calls } = makeHarness()
+  ctx.emit({} as any, 'agent/created', { agent: { id: 'sess-A' } })
+  await flush()
+  assert.equal(registry.has('sess-A'), true)
+  ctx.emit({} as any, 'agent/disposed', { agent: { id: 'sess-A' } })
+  await flush()
+  assert.deepEqual(calls.closes, ['w1:p3'])
+  assert.equal(registry.has('sess-A'), false)
+  void ctx.fiber.dispose()
+})
+
+test('CA-013: context dispose only removes its own registry keys (multi-instance/HMR)', async () => {
+  const registry = getBindingRegistry()
+  const a = makeHarness()
+  const b = makeHarness()
+  a.ctx.emit({} as any, 'agent/created', { agent: { id: 'sess-A' } })
+  b.ctx.emit({} as any, 'agent/created', { agent: { id: 'sess-B' } })
+  await flush()
+  assert.equal(registry.has('sess-A'), true)
+  assert.equal(registry.has('sess-B'), true)
+  // 卸载实例 A（模拟 HMR 重叠）：只删 sess-A，sess-B 必须保留
+  void a.ctx.fiber.dispose()
+  await flush()
+  assert.equal(registry.has('sess-A'), false, 'A cleans its own key')
+  assert.equal(registry.has('sess-B'), true, 'B key untouched by A dispose')
+  void b.ctx.fiber.dispose()
+  await flush()
+  assert.equal(registry.has('sess-B'), false)
+})
