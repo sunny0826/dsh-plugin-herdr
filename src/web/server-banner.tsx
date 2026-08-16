@@ -8,7 +8,6 @@ import type { HerdrStatusSnapshot } from './types.ts'
 export function HerdrServerBanner({ snap, error, onStarted }: { snap: HerdrStatusSnapshot | null; error: string | null; onStarted?: () => void }) {
   const { starting, startError, start } = useHerdrStart()
   const server = snap?.server
-  const cliAvailable = snap?.cli?.available !== false
 
   const handleStart = async () => {
     const ok = await start()
@@ -29,14 +28,6 @@ export function HerdrServerBanner({ snap, error, onStarted }: { snap: HerdrStatu
         <span className="herdr-conn-dot bad" />
         <span className="herdr-server-title">herdr 服务状态不可用</span>
         <span className="herdr-server-error">{error}</span>
-      </>
-    )
-  } else if (!cliAvailable) {
-    body = (
-      <>
-        <span className="herdr-conn-dot" style={{ background: 'var(--dsw-alias-label-tertiary)' }} />
-        <span className="herdr-server-title">herdr CLI 未安装</span>
-        <span className="herdr-server-note">安装后自动出现启动按钮</span>
       </>
     )
   } else if (server?.running) {
@@ -65,11 +56,9 @@ export function HerdrServerBanner({ snap, error, onStarted }: { snap: HerdrStatu
 
   const bannerClass = !snap || error ? 'herdr-server-banner' : server?.running
     ? 'herdr-server-banner herdr-banner-running'
-    : !cliAvailable
-      ? 'herdr-server-banner'
-      : server && (server.status === 'not_running' || server.status === 'unknown')
-        ? 'herdr-server-banner herdr-banner-stopped'
-        : 'herdr-server-banner'
+    : server && (server.status === 'not_running' || server.status === 'unknown')
+      ? 'herdr-server-banner herdr-banner-stopped'
+      : 'herdr-server-banner'
 
   return (
     <div>

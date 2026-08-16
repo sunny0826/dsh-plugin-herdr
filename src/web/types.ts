@@ -65,11 +65,6 @@ export interface HerdrStatusSnapshot {
   agents: HerdrAgentStatus[]
   updated_at: number
   connected: boolean
-  cli?: {
-    available: boolean
-    path: string
-    version?: string
-  }
   server?: HerdrServerInfo
   topology?: HerdrTopology
   filter?: HerdrFilterInfo

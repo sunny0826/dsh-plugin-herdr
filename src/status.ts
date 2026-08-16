@@ -1,6 +1,8 @@
-import { execFile, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import type { Context } from '@deepseek-ai/cordis'
 import type { HerdrClient } from './client/index.ts'
+import { HerdrError } from './client/error.ts'
+import { socketPing } from './client/socket.ts'
 import { createLogger, createRateLimiter, errText } from './log.ts'
 import { isPathWithinProject } from './paths.ts'
 import { getBoundPaneIds } from './binding-registry.ts'
@@ -68,25 +70,13 @@ export interface HerdrFilterInfo {
 }
 
 
-/** herdr CLI 可用性探测结果（安装检查）。 */
-export interface HerdrCliInfo {
-  /** cliPath 是否可执行（ENOENT 视为未安装）。 */
-  available: boolean
-  /** 探测使用的可执行路径。 */
-  path: string
-  /** herdr --version 首行（探测成功时）。 */
-  version?: string
-}
-
 /** 服务端维护的完整快照（/herdr-status 返回值）。 */
 export interface HerdrStatusSnapshot {
   agents: HerdrAgentStatus[]
   updated_at: number
-  /** herdr 服务可用性（headless server 运行 + CLI 可用时方为 true）。 */
+  /** herdr 服务可用性（socket ping 成功时方为 true）。 */
   connected: boolean
-  /** herdr CLI 安装检查（未安装时客户端显示安装指引）。 */
-  cli: HerdrCliInfo
-  /** herdr headless server 运行状态（启动看板）。 */
+  /** herdr headless server 运行状态（socket ping 派生；启动看板）。 */
   server: HerdrServerInfo
   /** workspace / tab / pane 拓扑（列表展示）。 */
   topology: HerdrTopology
@@ -100,7 +90,10 @@ export interface HerdrStatusSnapshot {
 
 const OUTPUT_CAP = 8000
 
-/** herdr headless server 状态（`herdr status server --json`）。 */
+/**
+ * herdr headless server 状态（socket ping 派生；全量迁移后不再调用
+ * `herdr status server --json`——version/protocol 由 pong 提供）。
+ */
 export interface HerdrServerInfo {
   status: string
   running: boolean
@@ -111,54 +104,8 @@ export interface HerdrServerInfo {
   checked_at: number
 }
 
-/** execFile 函数形状（测试注入用）。 */
-export type ExecFileFn = (cmd: string, args: string[], opts: { timeout: number }, cb: (err: Error | null, stdout: string) => void) => void
-
-/** 探测 herdr headless server 是否运行（`herdr status server --json`；失败降级 unknown）。 */
-export function probeServer(cliPath: string, execFn?: ExecFileFn): Promise<HerdrServerInfo> {
-  const run = execFn ?? ((cmd, args, opts, cb) => execFile(cmd, args, opts, cb))
-  return new Promise(resolve => {
-    run(cliPath, ['status', 'server', '--json'], { timeout: 5000 }, (err, stdout) => {
-      if (err || !stdout) {
-        resolve({ status: 'unknown', running: false, version: null, protocol: null, socket: null, session: null, checked_at: Date.now() })
-        return
-      }
-      try {
-        const raw = JSON.parse(stdout.trim().split('\n')[0] ?? '{}') as Record<string, unknown>
-        resolve({
-          status: typeof raw.status === 'string' ? raw.status : 'unknown',
-          running: raw.running === true,
-          version: typeof raw.version === 'string' ? raw.version : null,
-          protocol: typeof raw.protocol === 'number' ? raw.protocol : null,
-          socket: typeof raw.socket === 'string' ? raw.socket : null,
-          session: typeof raw.session === 'string' ? raw.session : null,
-          checked_at: Date.now(),
-        })
-      } catch {
-        resolve({ status: 'unknown', running: false, version: null, protocol: null, socket: null, session: null, checked_at: Date.now() })
-      }
-    })
-  })
-}
-
-/**
- * 探测 herdr CLI：可执行存在即 available（--version 失败也算已安装，
- * 例如 Herdr pane 环境内 --version 行为异常；只有 ENOENT 视为未安装）。
- * execFn 供测试注入（默认 execFile）。
- */
-export function probeCli(cliPath: string, execFn?: ExecFileFn): Promise<HerdrCliInfo> {
-  const run = execFn ?? ((cmd, args, opts, cb) => execFile(cmd, args, opts, cb))
-  return new Promise(resolve => {
-    run(cliPath, ['--version'], { timeout: 5000 }, (err, stdout) => {
-      if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
-        resolve({ available: false, path: cliPath })
-        return
-      }
-      const first = stdout?.trim().split('\n')[0]
-      resolve({ available: true, path: cliPath, version: first || undefined })
-    })
-  })
-}
+/** ping 探测函数形状（测试注入用）；null = 服务器不可达。 */
+export type PingProbeFn = () => Promise<{ version: string; protocol: number } | null>
 
 // ---------------------------------------------------------------------------
 // 启动 herdr headless server（`herdr server`，spawn 后轮询就绪）
@@ -170,30 +117,48 @@ export type SpawnFn = (cmd: string, args: string[], opts: { detached: boolean; s
   on(event: 'error', listener: (err: Error) => void): unknown
 }
 
-/** 探测函数形状（测试注入用）。 */
-export type ServerProbeFn = (cliPath: string) => Promise<HerdrServerInfo>
-
 let starting: Promise<HerdrServerInfo> | null = null
 
+/** ping 结果 → HerdrServerInfo（socket/session 由调用方解析配置提供）。 */
+export function serverInfoFromPing(
+  ping: { version: string; protocol: number } | null,
+  socketPath: string | null,
+  session: string | null,
+  status: 'running' | 'not_running',
+): HerdrServerInfo {
+  return {
+    status,
+    running: status === 'running',
+    version: ping?.version ?? null,
+    protocol: ping?.protocol ?? null,
+    socket: socketPath,
+    session,
+    checked_at: Date.now(),
+  }
+}
+
 /**
- * 启动 herdr headless server 并轮询 `herdr status server --json` 直到 running
- * （或超时）。并发调用共享同一启动过程；已运行时直接返回当前状态。
- * spawn 失败（ENOENT 等）立即 reject；超时返回最后一次探测结果（running=false）。
+ * 启动 herdr headless server（D1：全插件唯一的 CLI spawn 引导例外——协议无
+ * server.start，socket 无法启动自身）。spawn `herdr server` 后轮询 socket ping
+ * 直到可达（或超时）。并发调用共享同一启动过程；已运行时直接返回当前状态。
+ * spawn 失败（ENOENT 等）立即 reject；超时返回未运行状态（running=false）。
  */
 export function startHerdrServer(
-  cliPath: string,
-  opts: { timeoutMs?: number; spawnFn?: SpawnFn; probe?: ServerProbeFn } = {},
+  socketPath: string,
+  opts: { binPath?: string; session?: string | null; timeoutMs?: number; spawnFn?: SpawnFn; probe?: PingProbeFn } = {},
 ): Promise<HerdrServerInfo> {
   if (starting) return starting
+  const binPath = opts.binPath ?? 'herdr'
   const spawnFn = opts.spawnFn ?? ((cmd, args, o) => spawn(cmd, args, o) as ReturnType<SpawnFn>)
-  const probe = opts.probe ?? probeServer
+  const probe = opts.probe ?? (() => socketPing(socketPath))
   const timeoutMs = opts.timeoutMs ?? 15000
+  const session = opts.session ?? null
   starting = (async () => {
-    const before = await probe(cliPath)
-    if (before.running) return before
+    const before = await probe()
+    if (before) return serverInfoFromPing(before, socketPath, session, 'running')
     let child: ReturnType<SpawnFn>
     try {
-      child = spawnFn(cliPath, ['server'], { detached: true, stdio: 'ignore' })
+      child = spawnFn(binPath, ['server'], { detached: true, stdio: 'ignore' })
     } catch (e) {
       throw new Error(`herdr server spawn failed: ${e instanceof Error ? e.message : String(e)}`)
     }
@@ -208,9 +173,9 @@ export function startHerdrServer(
         new Promise<'tick'>(res => setTimeout(() => res('tick'), 500)),
       ])
       void signal
-      const info = await probe(cliPath)
-      if (info.running) return info
-      if (Date.now() >= deadline) return info
+      const info = await probe()
+      if (info) return serverInfoFromPing(info, socketPath, session, 'running')
+      if (Date.now() >= deadline) return serverInfoFromPing(null, socketPath, session, 'not_running')
     }
   })().finally(() => {
     starting = null
@@ -297,7 +262,6 @@ export class HerdrStatusTracker {
   private readonly agents = new Map<string, HerdrAgentStatus>()
   private timer: NodeJS.Timeout | null = null
   private readonly pollIntervalMs: number
-  private cliInfo: HerdrCliInfo = { available: false, path: 'herdr' }
   private serverInfo: HerdrServerInfo = { status: 'unknown', running: false, version: null, protocol: null, socket: null, session: null, checked_at: 0 }
   // 双拓扑（design-v2 §7.3）：full 全量 + filtered 按项目目录过滤
   private fullTopology: HerdrTopology = { workspaces: [], tabs: [], panes: [] }
@@ -323,11 +287,15 @@ export class HerdrStatusTracker {
   constructor(
     private readonly ctx: Context,
     private readonly client: HerdrClient,
-    private readonly cliPath: string,
     opts: {
       pollIntervalMs?: number
       staleThresholdMs?: number
-      probeServerFn?: ServerProbeFn
+      /** socket 路径（看板 server.socket 展示；缺省 null）。 */
+      socketPath?: string | null
+      /** 会话名（看板 server.session 展示；缺省 null）。 */
+      session?: string | null
+      /** ping 探测（测试注入用；缺省 client.ping 包装：连接类失败 → null=未运行）。 */
+      pingFn?: PingProbeFn
       /** 项目根（过滤用；缺省 process.cwd()，§7.2）。注入便于测试。 */
       projectRoot?: string
       /** self pane 豁免：枚举已绑定 pane_id（缺省走 binding-registry；注入便于测试）。 */
@@ -338,25 +306,34 @@ export class HerdrStatusTracker {
     this.staleThresholdMs = opts.staleThresholdMs ?? this.pollIntervalMs * 3
     this.logger = createLogger(ctx, 'status')
     this.rateLimited = createRateLimiter(10_000)
-    this.probeServerFn = opts.probeServerFn ?? probeServer
+    this.socketPath = opts.socketPath ?? null
+    this.session = opts.session ?? null
+    this.pingFn = opts.pingFn ?? (async () => {
+      try {
+        const p = await client.ping()
+        return { version: p.version, protocol: p.protocol }
+      } catch (err) {
+        // 连接类失败（socket 不存在/拒绝）→ 未运行；协议类失败才视为探测错误
+        if (err instanceof HerdrError && err.code === 'HERDR_UNAVAILABLE') return null
+        throw err
+      }
+    })
     this.projectRoot = opts.projectRoot ?? process.cwd()
     this.boundPaneIdsFn = opts.getBoundPaneIds ?? getBoundPaneIds
     this.filterInfo.project_root = this.projectRoot
   }
 
+  /** socket 路径（看板 server.socket 展示）。 */
+  private readonly socketPath: string | null
+  /** 会话名（看板 server.session 展示）。 */
+  private readonly session: string | null
   /** 项目根（过滤基准）。 */
   private readonly projectRoot: string
   /** self pane 豁免的已绑定 pane_id 来源（可注入）。 */
   private readonly boundPaneIdsFn: () => string[]
 
-  /** 测试注入用：server 状态探测（默认真实 probeServer）。 */
-  private readonly probeServerFn: ServerProbeFn
-
-  /** 探测 herdr CLI（启动时调用一次）。 */
-  async probeCli(): Promise<HerdrCliInfo> {
-    this.cliInfo = await probeCli(this.cliPath)
-    return this.cliInfo
-  }
+  /** ping 探测（默认真实 client.ping 包装）。 */
+  private readonly pingFn: PingProbeFn
 
   /** 消费 herdr/agent-state 事件（forward.ts 发出）。 */
   onAgentState(info: { pane_id: string; agent: string; status: string; message?: string }): void {
@@ -444,8 +421,7 @@ export class HerdrStatusTracker {
     return {
       agents,
       updated_at: Date.now(),
-      connected: this.cliInfo.available && this.serverInfo.running,
-      cli: this.cliInfo,
+      connected: this.serverInfo.running,
       server: this.serverInfo,
       topology: scope === 'all' ? this.fullTopology : this.filteredTopology,
       last_error: this.lastError,
@@ -454,15 +430,19 @@ export class HerdrStatusTracker {
     }
   }
 
-  /** 轮询 herdr headless server 状态（看板数据源；CLI 缺失时降级 unknown）。 */
+  /** 轮询 herdr headless server 状态（看板数据源；socket ping 派生）。 */
   private async pollServer(signal: AbortSignal): Promise<void> {
-    const info = await this.probeServerFn(this.cliPath)
-    if (signal.aborted) return
-    this.serverInfo = info
-    // 探测降级（unknown/非 running）也记录诊断，便于 stale 排查
-    if (info.status === 'unknown') {
-      this.lastError = 'herdr server probe degraded (status unknown)'
-      this.rateLimited('poll-server', () => this.logger.warn('herdr server probe degraded (status unknown)'))
+    try {
+      const ping = await this.pingFn()
+      if (signal.aborted) return
+      this.serverInfo = serverInfoFromPing(ping, this.socketPath, this.session, ping ? 'running' : 'not_running')
+    } catch (err) {
+      // 探测失败（协议类）→ 降级 unknown 并记录诊断，便于 stale 排查
+      if (!signal.aborted) {
+        this.serverInfo = { status: 'unknown', running: false, version: null, protocol: null, socket: this.socketPath, session: this.session, checked_at: Date.now() }
+        this.lastError = `server probe failed: ${errMsg(err)}`
+        this.rateLimited('poll-server', () => this.logger.warn('server probe failed: %s', errMsg(err)))
+      }
     }
   }
 

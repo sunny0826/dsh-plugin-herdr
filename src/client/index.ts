@@ -210,12 +210,15 @@ export interface ClearAgentAuthorityRequest {
 
 /**
  * Herdr 控制面服务（DESIGN.md §5.3 / §7.3）。
- * 具体实现由传输层提供：CliHerdrClient（cli.ts）、SocketHerdrClient（M2）。
+ * 全量迁移后唯一实现为 SocketHerdrClient（socket.ts；CLI 传输已移除）。
  */
 export abstract class HerdrClient extends Service {
   constructor(ctx: Context) {
     super(ctx, 'herdr')
   }
+
+  /** 服务器可达性与版本探测（socket ping；看板 connected/server 数据源）。 */
+  abstract ping(): Promise<{ version: string; protocol: number }>
 
   /** 会话快照（session.snapshot）。 */
   abstract snapshot(): Promise<HerdrSnapshot>

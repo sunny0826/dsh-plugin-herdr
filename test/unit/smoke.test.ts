@@ -6,8 +6,6 @@ import { apply as applyClient } from '../../lib/client-entry.mjs'
 import { Config, type Config as ConfigType } from '../../src/config.ts'
 
 const FULL_CONFIG: ConfigType = {
-  cliPath: 'herdr',
-  transport: 'cli',
   timeoutMs: 30000,
   allowBackground: false,
   events: { enabled: false, maxReconnectMs: 30000 },
@@ -54,9 +52,9 @@ test('tools declare UI cards (presentCall)', async () => {
   const fiber = await ctx.plugin({ name: 'dsh-plugin-herdr', apply, inject: ['tools', 'herdr', 'jobs'] }, FULL_CONFIG)
   try {
     const names = registered.map(r => r.name)
-    // CLI transport：layout_apply 不注册（socket only）；v2 关闭/重命名 4 工具在 CLI 注册
-    assert.equal(names.length, 17, 'all tools registered: ' + names.join(','))
-    assert.ok(!names.includes('herdr_layout_apply'), 'layout_apply skipped on CLI transport')
+    // 全量 socket 迁移后 layout_apply 恒注册（18 个工具）
+    assert.equal(names.length, 18, 'all tools registered: ' + names.join(','))
+    assert.ok(names.includes('herdr_layout_apply'), 'layout_apply registered (socket transport only)')
     const paneRun = registered.find(r => r.name === 'herdr_pane_run')
     assert.ok(paneRun?.presentCall, 'herdr_pane_run should declare presentCall')
     const call = paneRun!.presentCall!({ command: 'echo hi' } as never) as { card: string }
@@ -73,16 +71,8 @@ test('tools declare UI cards (presentCall)', async () => {
 
 test('config schema fills defaults', () => {
   const ok = Config['~standard'].validate({}) as { value: ConfigType }
-  assert.equal(ok.value.transport, 'cli')
   assert.equal(ok.value.timeoutMs, 30000)
   assert.equal(ok.value.allowBackground, false)
   assert.equal(ok.value.reportState, true)
   assert.equal(ok.value.events.enabled, false)
-})
-
-test('config schema rejects invalid enum loudly', () => {
-  const bad = Config['~standard'].validate({ transport: 'bogus' }) as { issues: unknown[] }
-  assert.ok(bad.issues.length > 0, 'invalid transport should produce issues')
-  const text = JSON.stringify(bad.issues)
-  assert.match(text, /bogus|transport/i)
 })

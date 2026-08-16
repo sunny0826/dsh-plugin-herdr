@@ -7,8 +7,7 @@ export function registerLayoutApply(ctx: Context) {
   ctx.tools.register(defineTool({
     name: 'herdr_layout_apply',
     description:
-      'Apply a declarative tab layout in Herdr (restores labels, cwd, env and optional commands). ' +
-      'Requires the socket transport (no CLI equivalent).',
+      'Apply a declarative tab layout in Herdr (restores labels, cwd, env and optional commands).',
     parameters: {
       root: { type: 'json', required: true, description: 'Layout tree: {type:"pane"|"split", ...}' },
       workspace_id: { type: 'string', description: 'Target workspace' },

@@ -6,8 +6,9 @@ from DSH sessions.
 
 - **18 `herdr_*` tools**: snapshot, agent list, pane run/read/split/send-keys,
   agent wait/prompt/explain/send-keys, workspace create/close/rename, pane
-  close/rename, pane layout, layout apply, notification — over the Herdr CLI or
-  the socket protocol.
+  close/rename, pane layout, layout apply, notification — all over the Herdr
+  socket protocol (JSONL over a Unix-domain socket; the CLI transport has been
+  removed).
 - **Herdr panel**: a two-column pane-card grid with drag-to-reorder, per-pane
   log preview/expand, rename and guarded close (confirm + self-pane refusal),
   plus a project-directory filter toggle — and a right-side floating pane status
@@ -20,7 +21,9 @@ from DSH sessions.
 
 ## Install
 
-Prerequisites: a DSH profile (e.g. `web`) and the `herdr` CLI on PATH.
+Prerequisites: a DSH profile (e.g. `web`) and a running herdr headless
+server (the panel's start button spawns `herdr server` from PATH — the only
+remaining CLI invocation, see "Platform support").
 
 ```sh
 # local directory
@@ -46,30 +49,26 @@ picker (copied to `$DSH_HOME/.agent-presets/herdr/` on first load).
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `cliPath` | string | `herdr` | herdr binary (or `HERDR_BIN_PATH` env) |
-| `socketPath` | string | – | socket transport path (`HERDR_SOCKET_PATH`); POSIX only |
+| `socketPath` | string | – | herdr socket path (`HERDR_SOCKET_PATH`); POSIX only |
 | `session` | string | – | herdr session name (`HERDR_SESSION`) |
-| `transport` | `cli` | `socket` | `cli` | transport backend |
 | `timeoutMs` | number | 30000 | per-command timeout |
 | `allowBackground` | boolean | `false` | expose `run_in_background` on pane run |
-| `events.enabled` | boolean | `false` | subscribe to Herdr events (socket transport) |
+| `events.enabled` | boolean | `false` | subscribe to Herdr events |
 | `events.maxReconnectMs` | number | 30000 | event subscription reconnect cap |
 | `reportState` | boolean | `true` | report DSH→Herdr state inside a pane (`HERDR_ENV`) |
 | `projectRoot` | string | – | project directory for panel filtering; defaults to `process.cwd()` (one workspace-root per DSH web instance) |
 
-CLI/socket transport limits (CA-014):
+Output limits (CA-014):
 
-- Per-command output is capped at 1 MiB per stream on both transports;
-  `pane_read`/`pane_run` report `truncated: true` when the cap is hit (socket
-  additionally surfaces the server-reported `truncated` flag).
-- CLI commands are spawned as a detached process group on POSIX; on
-  timeout/abort the whole process tree is killed (no leftover `sh -c`
-  children). Windows only terminates the direct child.
+- Per-command output is capped at 1 MiB per stream; `pane_read`/`pane_run`
+  report `truncated: true` when the cap is hit (the server-reported
+  `truncated` flag is surfaced as-is).
 
-Platform support: the CLI transport (`sh -c` wrapping, process groups,
-Unix-domain sockets) is **POSIX-only**; on Windows the plugin does not guess a
-named-pipe socket path and falls back to the CLI transport, which is not
-supported — use POSIX (macOS/Linux) for full functionality.
+Platform support: the plugin is **POSIX-only** — all control-plane interaction
+goes over the herdr Unix-domain socket (JSONL), and the panel's start button
+spawns `herdr server` from PATH as the single bootstrap exception. Windows
+(named pipe) is **not supported**: the plugin refuses to load without a
+resolvable socket path. Use POSIX (macOS/Linux).
 
 Example patch (`cordis.patch.yml`):
 
@@ -77,12 +76,11 @@ Example patch (`cordis.patch.yml`):
 - id: dsh-plugin-herdr-client
   name: dsh-plugin-herdr/client-entry
   config:
-    cliPath: herdr
     timeoutMs: 15000
 - id: dsh-plugin-herdr
   name: dsh-plugin-herdr
   config:
-    transport: cli
+    timeoutMs: 15000
 ```
 
 ## Tools
@@ -102,7 +100,7 @@ Example patch (`cordis.patch.yml`):
 | `herdr_pane_send_keys` | Send key presses to a pane |
 | `herdr_pane_read` | Read pane terminal output (visible/recent) |
 | `herdr_pane_layout` | Read a pane's layout |
-| `herdr_layout_apply` | Apply a declarative layout (socket transport only) |
+| `herdr_layout_apply` | Apply a declarative layout |
 | `herdr_agent_prompt` | Submit a prompt to an agent, optionally wait for a state |
 | `herdr_agent_explain` | Explain agent detection state |
 | `herdr_agent_send_keys` | Send keys to an agent |
@@ -146,8 +144,8 @@ status source (`/herdr-status`), so scope and filtering behave identically
 
 ## Safety boundary
 
-- All actions are local to your machine; the plugin shells out to the `herdr`
-  CLI or talks to the local socket.
+- All actions are local to your machine; the plugin talks to the local herdr
+  socket (the only subprocess spawn is the optional server-start bootstrap).
 - The panel endpoints (`/herdr-status`, `/herdr-start`,
   `/herdr-session-pane`, `/herdr-close`, `/herdr-rename`) are plain HTTP on
   the local web server — do not expose the DSH web port publicly. They are
@@ -166,9 +164,8 @@ status source (`/herdr-status`), so scope and filtering behave identically
 
 | Symptom | Fix |
 | --- | --- |
-| "herdr CLI not found" | Install herdr: `curl -fsSL https://herdr.dev/install.sh | sh` |
-| Tools fail with `HERDR_UNAVAILABLE` | Start the Herdr headless server (or use the panel's start button) |
-| Layout tools fail on CLI transport | `herdr_layout_apply` requires `transport: socket` |
+| `HERDR_UNAVAILABLE`: "herdr socket not found" | Start the Herdr headless server (`herdr server` or the panel's start button); install herdr first: `curl -fsSL https://herdr.dev/install.sh | sh` |
+| Plugin fails to load with "requires a resolvable socket path" | Windows is not supported; on POSIX set `socketPath`/`HERDR_SOCKET_PATH` |
 | No "Herdr 模式" preset | Check `$DSH_HOME/.agent-presets/herdr/` exists (plugin recreates it on load) |
 
 ## Development

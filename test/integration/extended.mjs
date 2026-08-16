@@ -15,8 +15,6 @@ assertPreflight()
 const HOME = homedir()
 
 const BASE_CONFIG = {
-  cliPath: 'herdr',
-  transport: 'cli',
   timeoutMs: 15000,
   allowBackground: false,
   events: { enabled: false, maxReconnectMs: 30000 },
@@ -39,7 +37,7 @@ const closePane = (id) => {
   try { execFileSync('herdr', ['pane', 'close', id], { encoding: 'utf8' }) } catch { /* ignore */ }
 }
 
-// ---- CLI 传输：扩展工具 ----
+// ---- socket 传输：扩展工具 ----
 {
   const ctx = new Context()
   ctx.provide('tools', { register: () => () => {} })
@@ -111,12 +109,12 @@ const closePane = (id) => {
   await cf.dispose()
 }
 
-// ---- socket 传输：真实 socket ----
+// ---- socket 传输：独立实例加载 ----
 {
   const ctx = new Context()
   ctx.provide('tools', { register: () => () => {} })
   ctx.provide('jobs', { start: () => 'herdr-1' })
-  const config = { ...BASE_CONFIG, transport: 'socket' }
+  const config = { ...BASE_CONFIG }
   let cf, f
   let socketPaneId = null
   try {

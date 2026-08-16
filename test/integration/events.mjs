@@ -8,8 +8,6 @@ import { apply as applyClient } from '../../lib/client-entry.mjs'
 import { assertPreflight, ensureWorkspace } from './preflight.mjs'
 
 const CONFIG = {
-  cliPath: 'herdr',
-  transport: 'socket',
   timeoutMs: 15000,
   allowBackground: false,
   events: { enabled: true, maxReconnectMs: 3000 },

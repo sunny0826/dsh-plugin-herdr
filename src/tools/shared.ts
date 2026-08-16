@@ -1,4 +1,4 @@
-import { HerdrCliError } from '../client/cli.ts'
+import { HerdrError } from '../client/error.ts'
 
 export const sleep = (ms: number) => new Promise<void>(res => setTimeout(res, ms))
 
@@ -26,7 +26,7 @@ export function requireRatio(value: unknown, name: string): asserts value is num
 
 /** 连接/环境/协议错误 → 抛错（工具进入 isError）；业务错误原样返回。 */
 export function toToolError(err: unknown): never {
-  if (err instanceof HerdrCliError) {
+  if (err instanceof HerdrError) {
     throw new Error(`${err.code}: ${err.message}`)
   }
   throw err instanceof Error ? err : new Error(String(err))
