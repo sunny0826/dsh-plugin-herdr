@@ -616,10 +616,9 @@ body[data-ds-dark-theme] {
   --herdr-brand-glow: ${HERDR_BRAND_GLOW_DARK};
 }
 
-'/* 需求 1：新会话输入卡紫色边框（data-composer-card 为稳定属性，无需打标；'
-'   保持 1px 不跳布局，叠加外圈与柔和辉光，辉光为视觉验收项可移除）。'
-'   过渡：无条件 transition 挂在卡片上，模式双向切换均平滑（herdr 规则只改值）。'
-'   极客入场：herdr 时卡片 ::before 渲染一条紫色扫描光带自上而下扫过（一次性） */'
+/* 需求 1：新会话输入卡紫色边框（data-composer-card 为稳定属性，无需打标；
+   保持 1px 不跳布局，叠加外圈与柔和辉光，辉光为视觉验收项可移除）。
+   过渡：无条件 transition 挂在卡片上，模式双向切换均平滑（herdr 规则只改值） */
 [data-phase='hero'] [data-composer-card] {
   transition:
     border-color .35s var(--ds-ease-in-out, ease),
@@ -632,33 +631,12 @@ html[data-herdr-mode='1'] [data-phase='hero'] [data-composer-card] {
     0 0 0 1px var(--herdr-brand),
     0 0 28px var(--herdr-brand-glow);
 }
-'/* 扫描光带：半透明紫色横条从卡片顶部扫到底部，末端渐隐（z-index 盖在内容上，'
-'   pointer-events 穿透；只在 herdr 模式存在，切换即重放） */'
-html[data-herdr-mode='1'] [data-phase='hero'] [data-composer-card]::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  border-radius: 22px;
-  overflow: hidden;
-  pointer-events: none;
-  background: linear-gradient(180deg, transparent, var(--herdr-brand-glow), transparent);
-  background-size: 100% 80px;
-  background-repeat: no-repeat;
-  background-position-y: -80px;
-  animation: herdr-scan .9s var(--ds-ease-in-out, ease) .12s both;
-}
-@keyframes herdr-scan {
-  0% { background-position-y: -80px; opacity: 1; }
-  70% { background-position-y: calc(100% - 20px); opacity: 1; }
-  100% { background-position-y: calc(100% + 80px); opacity: 0; }
-}
 
-'/* 需求 2a：fish 与 herdr logo 常驻并存（布局恒定、适配值不变）。'
-'   极客过渡：'
-'   - fish 退场「失焦消散」：缩小 + 模糊 + 淡出（transform-box 保证以中心缩放）；'
-'   - herdr logo 入场「回弹 + 旋转 + 模糊消散」（transform 帧内含居中适配值，'
-'     animation 结束后与规则值一致，切回仍走 opacity transition 淡出）。 */'
+/* 需求 2a：fish 与 herdr logo 常驻并存 + 交叉淡入淡出（模式切换过渡）。
+   - fish svg 绝对定位居中于座位 span（布局由 ::before 恒占 30×30 决定，
+     两种模式布局恒定、行高/图形位置不跳，居中适配值保持不变）；
+   - ::before 默认 opacity 0（透明常驻），herdr 时 1 —— 双向都可过渡；
+   - DOM 顺序 ::before 先于 svg 渲染，淡出 fish 即显露下层 logo。 */
 [data-phase='hero'] .herdr-hero-fish { position: relative; }
 [data-phase='hero'] .herdr-hero-fish svg {
   position: absolute;
@@ -666,15 +644,8 @@ html[data-herdr-mode='1'] [data-phase='hero'] [data-composer-card]::before {
   height: 25px;
   left: calc(50% - 17px);      /* 居中于座位（不依赖 span 是否 stretch） */
   top: calc(50% - 12.5px);
-  transform-box: border-box;   /* SVG 默认以 view-box 为原点，显式改为中心缩放 */
-  transform-origin: center;
-'  opacity: 1; /* 显式基础值：模式切回时从 0 过渡回 1（回退到隐式 UA 值不触发过渡） */'
-  transform: scale(1);
-  filter: blur(0);
-  transition:
-    opacity .35s var(--ds-ease-in-out, ease),
-    transform .35s var(--ds-ease-in-out, ease),
-    filter .35s var(--ds-ease-in-out, ease);
+  opacity: 1; /* 显式基础值：模式切回时从 0 过渡回 1（回退到隐式 UA 值不触发过渡） */
+  transition: opacity .35s var(--ds-ease-in-out, ease);
 }
 [data-phase='hero'] .herdr-hero-fish::before {
   content: '';
@@ -684,46 +655,20 @@ html[data-herdr-mode='1'] [data-phase='hero'] [data-composer-card]::before {
   background: var(--herdr-brand);
   -webkit-mask: var(--herdr-logo-mask) center / contain no-repeat;
   mask: var(--herdr-logo-mask) center / contain no-repeat;
-'  /* 水平：图形在 512 画布内偏右 +10.18% → 平移回列中心；'
-'     垂直：图形偏下 +13.58% → 平移回行中心，再额外上移 2px（-6.67%）'
-'     对齐 fish 的视觉位置（用户反馈 logo 偏下，视觉验收值；如需微调改此处） */'
+  /* 水平：图形在 512 画布内偏右 +10.18% → 平移回列中心；
+     垂直：图形偏下 +13.58% → 平移回行中心，再额外上移 2px（-6.67%）
+     对齐 fish 的视觉位置（用户反馈 logo 偏下，视觉验收值；如需微调改此处） */
   transform: translate(-10.18%, -20.25%);
   opacity: 0;
   transition: opacity .35s var(--ds-ease-in-out, ease);
 }
-html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-fish svg {
-  opacity: 0;
-  transform: scale(.8);
-  filter: blur(2px);
-}
-html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-fish::before {
-  opacity: 1;
-'  /* 入场：回弹缩放 + 旋转 + 模糊消散；transform 组合中适配值放最后（右→左应用，'
-'     先 rotate/scale 后 translate，最终位置 = 适配值平移） */'
-  animation: herdr-logo-in .55s cubic-bezier(.2, .9, .3, 1.35) both;
-}
-@keyframes herdr-logo-in {
-  0% {
-    opacity: 0;
-    transform: translate(-10.18%, -20.25%) scale(.45) rotate(-14deg);
-    filter: blur(4px);
-  }
-  60% {
-    opacity: 1;
-    transform: translate(-10.18%, -20.25%) scale(1.12) rotate(3deg);
-    filter: blur(0);
-  }
-  100% {
-    opacity: 1;
-    transform: translate(-10.18%, -20.25%) scale(1) rotate(0);
-    filter: blur(0);
-  }
-}
+html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-fish svg { opacity: 0; }
+html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-fish::before { opacity: 1; }
 
-'/* 需求 2b：标题分段替换（文案常量来自 hero-branding.ts，修改需同步该文件）：'
-'   ::before = 「Herdr 助你」品牌特效；::after = 「探索未知之境」原字体原色。'
-'   极客过渡：打字机逐字符揭示（clip-path 水平裁剪 + steps 跳变；'
-'   ::before 8 字符 / ::after 6 字符级联延迟），原文本 font-size:0 即时隐藏 */'
+/* 需求 2b：标题分段替换（文案常量来自 hero-branding.ts，修改需同步该文件）：
+   ::before = 「Herdr 助你」品牌特效；::after = 「探索未知之境」原字体原色
+   （color / font-weight 继承自 headline，仅显式恢复 font-size）。
+   过渡：新文案淡入上浮（::after 级联延迟 .08s），原文本 font-size:0 即时隐藏 */
 html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text { font-size: 0; }
 html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text::before {
   content: '${HERDR_HERO_TEXT_BRAND}';
@@ -733,29 +678,27 @@ html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text::before {
   color: var(--herdr-brand);
   text-shadow: 0 0 18px var(--herdr-brand-glow);
   white-space: nowrap;
-  animation: herdr-type .5s steps(8, end) both;
+  animation: herdr-text-in .35s var(--ds-ease-in-out, ease) both;
 }
 html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text::after {
   content: '${HERDR_HERO_TEXT_PLAIN}';
   font-size: 26px;
   line-height: 32px;
   white-space: nowrap;
-  animation: herdr-type .4s steps(6, end) .55s both;
+  animation: herdr-text-in .35s var(--ds-ease-in-out, ease) .08s both;
 }
-@keyframes herdr-type {
-  from { clip-path: inset(0 100% 0 0); }
-  to { clip-path: inset(0 0 0 0); }
+@keyframes herdr-text-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-'/* 减弱动效偏好（prefers-reduced-motion）：关闭过渡与动画，切换即时生效 */'
+/* 减弱动效偏好（prefers-reduced-motion）：关闭过渡与动画，切换即时生效 */
 @media (prefers-reduced-motion: reduce) {
   [data-phase='hero'] [data-composer-card],
   [data-phase='hero'] .herdr-hero-fish svg,
   [data-phase='hero'] .herdr-hero-fish::before {
     transition: none;
   }
-  html[data-herdr-mode='1'] [data-phase='hero'] [data-composer-card]::before,
-  html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-fish::before,
   html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text::before,
   html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text::after {
     animation: none;
