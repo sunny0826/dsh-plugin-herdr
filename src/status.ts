@@ -240,13 +240,17 @@ export class HerdrStatusTracker {
     private readonly ctx: Context,
     private readonly client: HerdrClient,
     private readonly cliPath: string,
-    opts: { pollIntervalMs?: number; staleThresholdMs?: number } = {},
+    opts: { pollIntervalMs?: number; staleThresholdMs?: number; probeServerFn?: ServerProbeFn } = {},
   ) {
     this.pollIntervalMs = opts.pollIntervalMs ?? 2000
     this.staleThresholdMs = opts.staleThresholdMs ?? this.pollIntervalMs * 3
     this.logger = createLogger(ctx, 'status')
     this.rateLimited = createRateLimiter(10_000)
+    this.probeServerFn = opts.probeServerFn ?? probeServer
   }
+
+  /** 测试注入用：server 状态探测（默认真实 probeServer）。 */
+  private readonly probeServerFn: ServerProbeFn
 
   /** 探测 herdr CLI（启动时调用一次）。 */
   async probeCli(): Promise<HerdrCliInfo> {
@@ -312,6 +316,8 @@ export class HerdrStatusTracker {
         ])
         // CA-012：仅当本轮无任何轮询错误时才视为“成功刷新”（stale 据此判定）
         if (!signal.aborted && this.lastError === errorBefore) {
+          // codex review P2：成功周期显式清空旧错误——一次故障后 last_error 不得永久保留
+          this.lastError = null
           this.lastSuccessAt = Date.now()
           this.staleLogged = false
         } else if (!signal.aborted) {
@@ -344,7 +350,7 @@ export class HerdrStatusTracker {
 
   /** 轮询 herdr headless server 状态（看板数据源；CLI 缺失时降级 unknown）。 */
   private async pollServer(signal: AbortSignal): Promise<void> {
-    const info = await probeServer(this.cliPath)
+    const info = await this.probeServerFn(this.cliPath)
     if (signal.aborted) return
     this.serverInfo = info
     // 探测降级（unknown/非 running）也记录诊断，便于 stale 排查

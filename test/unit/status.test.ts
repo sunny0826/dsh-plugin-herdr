@@ -143,20 +143,21 @@ const EMPTY_SNAP = {
 
 function makeTrackerClient(opts: { snapshotDelayMs?: number; snapshotError?: boolean } = {}) {
   const calls = { snapshot: 0, listAgents: 0, paneRead: 0 }
+  const state = { snapshotError: opts.snapshotError === true }
   const client = {
     snapshot: async () => {
       calls.snapshot++
       if (opts.snapshotDelayMs) await new Promise(r => setTimeout(r, opts.snapshotDelayMs))
-      if (opts.snapshotError) throw new Error('boom')
+      if (state.snapshotError) throw new Error('boom')
       return EMPTY_SNAP
     },
     listAgents: async () => { calls.listAgents++; return [] },
     paneRead: async () => { calls.paneRead++; return { text: '', truncated: false } },
   } as unknown as HerdrClient
-  return { client, calls }
+  return { client, calls, setSnapshotError: (v: boolean) => { state.snapshotError = v } }
 }
 
-const makeTracker = (client: HerdrClient, opts: { pollIntervalMs?: number; staleThresholdMs?: number } = {}) =>
+const makeTracker = (client: HerdrClient, opts: { pollIntervalMs?: number; staleThresholdMs?: number; probeServerFn?: ServerProbeFn } = {}) =>
   new HerdrStatusTracker(new Context(), client, 'herdr', opts)
 
 const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -215,4 +216,22 @@ test('CA-012: healthy cycles report not stale', async () => {
   const snap = tracker.snapshot()
   assert.equal(snap.last_error, null, 'no errors on healthy polls')
   assert.equal(snap.stale, false, 'clean cycle completed → not stale')
+})
+
+// codex review P2：失败后成功周期必须清空 last_error
+test('CR: a successful cycle clears last_error from a previous failure', async () => {
+  const { client, setSnapshotError } = makeTrackerClient({ snapshotError: true })
+  const probe: ServerProbeFn = async () => ({ status: 'running', running: true, version: '0.8.0', protocol: 19, socket: null, session: null, checked_at: 0 })
+  const tracker = makeTracker(client, { pollIntervalMs: 60_000, staleThresholdMs: 5000, probeServerFn: probe })
+  tracker.start()
+  await sleepMs(150)
+  assert.match(tracker.snapshot().last_error ?? '', /topology poll failed/, 'failure recorded on first cycle')
+  // 恢复：快照不再抛错，下一轮为干净周期
+  setSnapshotError(false)
+  tracker.stop()
+  tracker.start() // 重启立即触发一轮成功周期
+  await sleepMs(150)
+  tracker.stop()
+  assert.equal(tracker.snapshot().last_error, null, 'successful cycle must clear the old error')
+  assert.equal(tracker.snapshot().stale, false, 'recovered → not stale')
 })

@@ -244,6 +244,25 @@ test('CA-014: socket paneRead reports server-truncated flag and client-side cap'
   }
 })
 
+test('CR: socket paneRead caps non-ASCII output by UTF-8 bytes', async () => {
+  // emoji（😀=4 UTF-8 字节）超限时按字节截断，不再按 UTF-16 码元虚高
+  const big = '😀'.repeat(400_000) // 1.6MB UTF-8 / 0.8M 码元
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    if (req.method === 'pane.read') replyAndClose(conn, req, { type: 'pane_read', read: { text: big, pane_id: 'w1:p1', truncated: false } })
+    else replyAndClose(conn, req, {})
+  })
+  try {
+    const client = makeClient(path)
+    const capped = await client.paneRead({ pane_id: 'w1:p1' })
+    assert.equal(capped.truncated, true)
+    assert.ok(Buffer.byteLength(capped.text, 'utf8') <= 1024 * 1024, `bytes=${Buffer.byteLength(capped.text)}`)
+    assert.ok(Buffer.byteLength(capped.text, 'utf8') > 1024 * 1024 - 64, 'capped near the limit')
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('CA-014: socket runCommand reports truncated when any poll read is truncated', async () => {
   const read = { type: 'pane_read', read: { text: 'z'.repeat(1024 * 1024 + 50), pane_id: 'w1:p1', truncated: false } }
   const { path, server, dir } = await startFakeServer((conn, req, close) => {

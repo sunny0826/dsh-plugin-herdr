@@ -1,7 +1,7 @@
 import { createConnection, type Socket } from 'node:net'
 import type { Context } from '@deepseek-ai/cordis'
 import { HerdrClient } from './index.ts'
-import { HerdrCliError, MAX_CLI_OUTPUT_BYTES } from './cli.ts'
+import { HerdrCliError, MAX_CLI_OUTPUT_BYTES, truncateUtf8Bytes } from './cli.ts'
 import { pollPaneUntilStable } from './poll.ts'
 import type { HerdrResultMap } from './types.ts'
 import type {
@@ -50,8 +50,9 @@ interface SocketEnvelope {
 function capReadText(read: { text?: string; truncated?: boolean } | undefined): { text: string; truncated: boolean } {
   let text = read?.text ?? ''
   let truncated = read?.truncated === true
-  if (text.length > MAX_CLI_OUTPUT_BYTES) {
-    text = text.slice(0, MAX_CLI_OUTPUT_BYTES)
+  // codex review P2：按 UTF-8 字节截断（非 ASCII 中文/emoji 不得虚高）
+  if (Buffer.byteLength(text) > MAX_CLI_OUTPUT_BYTES) {
+    text = truncateUtf8Bytes(text, MAX_CLI_OUTPUT_BYTES)
     truncated = true
   }
   return { text, truncated }

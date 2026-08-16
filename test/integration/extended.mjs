@@ -63,16 +63,21 @@ const closePane = (id) => {
   })
 
   await check('pane send keys + read', async () => {
-    // CA-009：不往 panes[0] 发键（可能是忙碌的 agent pane，输入会被吞）；
-    // 新建 split pane（shell 回显确定）并在结束时清理。
-    const { pane_id } = await ctx.herdr.paneSplit({ direction: 'right', ratio: 0.5 })
+    // 不 split 焦点 pane（本机焦点是忙碌的 agent pane，其终端不响应键盘输入）；
+    // 显式 split 一个无 agent 的普通 shell pane。
+    const snap = await ctx.herdr.snapshot()
+    const plain = snap.panes.find(p => !p.agent_status) ?? snap.panes[0]
+    assert.ok(plain?.pane_id, 'need a plain pane to split')
+    const { pane_id } = await ctx.herdr.paneSplit({ pane_id: plain.pane_id, direction: 'right', ratio: 0.5 })
     createdPanes.add(pane_id)
-    // send-keys 是单键语义：逐字符文本键 + enter
-    const keys = [...'keyprobe'].map(ch => ch)  // 每个可打印字符是单独键
+    // 本机实测：send-keys 每批首个键会丢失（zzz→zz）；前置一个可牺牲键，
+    // 无论它是否丢失，回显都包含完整的 keyprobe。
+    await new Promise(res => setTimeout(res, 1000))
+    const keys = ['x', ...'keyprobe'].map(ch => ch)
     keys.push('enter')
     await ctx.herdr.paneSendKeys({ pane_id, keys })
     await new Promise(res => setTimeout(res, 800))
-    const { text } = await ctx.herdr.paneRead({ pane_id, source: 'visible', lines: 10 })
+    const { text } = await ctx.herdr.paneRead({ pane_id, source: 'visible', lines: 60 })
     const flat = text.replace(/\n/g, '')
     assert.ok(flat.includes('keyprobe'), 'read should contain echoed keys: ' + flat.slice(-120))
   })

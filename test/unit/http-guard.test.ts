@@ -48,6 +48,25 @@ test('guard: local Host with matching Origin -> ok', () => {
   assert.equal(g.ok, true)
 })
 
+test('guard: same hostname different port -> 403 (local cross-port CSRF)', () => {
+  // codex review P1：localhost:3000 页面 → :1234 控制面，hostname 相同但 authority 不同
+  const g = guardLocalRequest(localReq({ host: 'localhost:1234', origin: 'http://localhost:3000' }))
+  assert.equal(g.ok, false)
+  assert.equal(g.status, 403)
+  assert.match(g.message, /cross-origin/)
+})
+
+test('guard: same hostname different scheme -> 403', () => {
+  const g = guardLocalRequest(localReq({ host: 'localhost:1234', origin: 'https://localhost:1234' }))
+  assert.equal(g.ok, false)
+  assert.equal(g.status, 403)
+})
+
+test('guard: default-port normalization (http://localhost == http://localhost:80) -> ok', () => {
+  const g = guardLocalRequest(localReq({ host: 'localhost:80', origin: 'http://localhost' }))
+  assert.equal(g.ok, true)
+})
+
 test('guard: local Host without Origin (curl / same-origin GET) -> ok', () => {
   for (const host of ['localhost:1234', '127.0.0.1', '[::1]:3000']) {
     const g = guardLocalRequest(localReq({ host }))

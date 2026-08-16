@@ -63,6 +63,17 @@ interface CliEnvelope {
 export const MAX_CLI_OUTPUT_BYTES = 1024 * 1024
 
 /**
+ * CR P2：按 UTF-8 字节预算截断字符串，保证结果不超过 maxBytes。
+ * 直接 Buffer.subarray+toString 在切点落在多字节字符中间时会产生 U+FFFD 替换符
+ * （3 字节），可能超出预算——这里解码后回退到有效边界。
+ */
+export function truncateUtf8Bytes(text: string, maxBytes: number): string {
+  let out = Buffer.from(text).subarray(0, maxBytes).toString('utf8')
+  while (Buffer.byteLength(out) > maxBytes) out = out.slice(0, -1)
+  return out
+}
+
+/**
  * CA-002：终止 CLI 子进程及其进程树。
  * - POSIX：子进程以 detached 方式 spawn 成为进程组 leader，负 pid 可对整个组发信号，
  *   保证 sh -c 包装出的 shell 后代（pane run 的 COMMAND 等）不会残留；
@@ -445,6 +456,8 @@ export class CliHerdrClient extends HerdrClient {
       }
       let stdout = ''
       let stderr = ''
+      let stdoutBytes = 0
+      let stderrBytes = 0
       let stdoutTruncated = false
       let stderrTruncated = false
       const outStream = child.stdout as NodeJS.ReadableStream | null
@@ -489,28 +502,38 @@ export class CliHerdrClient extends HerdrClient {
           fail(new HerdrCliError('HERDR_UNAVAILABLE', `failed to run '${full[0]}': ${err.message}`))
         }
       })
-      // CA-002：输出上限——超过 MAX_CLI_OUTPUT_BYTES 停止累积（仍继续消费流，
-      // 避免子进程写满管道阻塞），并置 truncated 标志供上层报告。
+      // CA-002/CR P2：输出上限——超过 MAX_CLI_OUTPUT_BYTES（UTF-8 字节）停止累积
+      // （仍继续消费流，避免子进程写满管道阻塞），并置 truncated 标志。
+      // 按 Buffer.byteLength 计字节而非字符串 length（UTF-16 码元），非 ASCII 输出
+      // （中文/emoji）不再虚高；超限时在有效 UTF-8 字节边界截断。
       const capStdout = (d: Buffer | string) => {
-        const s = String(d)
         if (stdoutTruncated) return
-        const remaining = MAX_CLI_OUTPUT_BYTES - stdout.length
-        if (s.length > remaining) {
-          stdout += s.slice(0, remaining)
+        const chunk = Buffer.isBuffer(d) ? d.toString('utf8') : String(d)
+        const bytes = Buffer.byteLength(chunk)
+        const remaining = MAX_CLI_OUTPUT_BYTES - stdoutBytes
+        if (bytes > remaining) {
+          const cut = truncateUtf8Bytes(chunk, remaining)
+          stdout += cut
+          stdoutBytes += Buffer.byteLength(cut)
           stdoutTruncated = true
         } else {
-          stdout += s
+          stdout += chunk
+          stdoutBytes += bytes
         }
       }
       const capStderr = (d: Buffer | string) => {
-        const s = String(d)
         if (stderrTruncated) return
-        const remaining = MAX_CLI_OUTPUT_BYTES - stderr.length
-        if (s.length > remaining) {
-          stderr += s.slice(0, remaining)
+        const chunk = Buffer.isBuffer(d) ? d.toString('utf8') : String(d)
+        const bytes = Buffer.byteLength(chunk)
+        const remaining = MAX_CLI_OUTPUT_BYTES - stderrBytes
+        if (bytes > remaining) {
+          const cut = truncateUtf8Bytes(chunk, remaining)
+          stderr += cut
+          stderrBytes += Buffer.byteLength(cut)
           stderrTruncated = true
         } else {
-          stderr += s
+          stderr += chunk
+          stderrBytes += bytes
         }
       }
       outStream?.on('data', capStdout)

@@ -61,14 +61,22 @@ export function guardLocalRequest(req: GuardedRequest): GuardResult {
   }
   const origin = get('origin')
   if (origin) {
-    let originHost: string | undefined
+    // codex review P1：比较完整规范化 authority（scheme + host + 有效端口），
+    // 而非仅主机名——本机跨端口 CSRF（localhost:3000 页面 → :3090 控制面）
+    // hostname 相同但 origin 不同，必须拒绝。
+    // URL.origin 已做默认端口归一（http:80 / https:443 省略）；
+    // 请求侧 scheme 固定为 http（DSH web server 为 plain HTTP，见 README）。
+    let originAuthority: string
+    let requestAuthority: string
     try {
-      originHost = hostnameOfHost(new URL(origin).host)
+      originAuthority = new URL(origin).origin
+      // Host 头原始值（host[:port] 或 [v6]:port）作为请求侧 authority
+      requestAuthority = new URL(`http://${get('host')}`).origin
     } catch {
       return { ok: false, status: 400, message: 'malformed Origin header' }
     }
-    if (originHost !== host) {
-      return { ok: false, status: 403, message: 'cross-origin request rejected (Origin != Host)' }
+    if (originAuthority !== requestAuthority) {
+      return { ok: false, status: 403, message: `cross-origin request rejected (Origin ${originAuthority} != ${requestAuthority})` }
     }
   }
   const secFetchSite = get('sec-fetch-site')

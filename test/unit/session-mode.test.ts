@@ -236,6 +236,29 @@ test('CA-013: dispose after bind completes still cleans up normally', async () =
   void ctx.fiber.dispose()
 })
 
+test('CR: dispose during bind clears the disposedAgents flag — session id reuse binds fresh', async () => {
+  const registry = getBindingRegistry()
+  const { ctx, calls } = makeSlowHarness()
+  // 第一次：bind 在途时 dispose → pane 被回收，标记必须清除
+  ctx.emit({} as any, 'agent/created', { agent: { id: 'sess-reuse' } })
+  ctx.emit({} as any, 'agent/disposed', { agent: { id: 'sess-reuse' } })
+  await new Promise(r => setTimeout(r, 200))
+  assert.deepEqual(calls.closes, ['w1:p9'], 'mid-race pane closed')
+  assert.equal(registry.has('sess-reuse'), false)
+  // 第二次：同一 session id 复用——必须正常绑定（新建 pane、不误关）
+  ctx.emit({} as any, 'agent/created', { agent: { id: 'sess-reuse' } })
+  await new Promise(r => setTimeout(r, 150)) // bind 是异步的（慢 snapshot 80ms）
+  assert.equal(registry.has('sess-reuse'), true, 'reused session id binds again')
+  assert.equal(calls.closes.length, 1, 'no spurious close for the reused binding')
+  assert.equal(calls.splits.length, 2, 'second bind splits a fresh pane')
+  // 正常 dispose 第二次绑定
+  ctx.emit({} as any, 'agent/disposed', { agent: { id: 'sess-reuse' } })
+  await flush()
+  assert.deepEqual(calls.closes, ['w1:p9', 'w1:p9'], 'second binding closed on dispose')
+  assert.equal(registry.has('sess-reuse'), false)
+  void ctx.fiber.dispose()
+})
+
 test('CA-013: context dispose only removes its own registry keys (multi-instance/HMR)', async () => {
   const registry = getBindingRegistry()
   const a = makeHarness()

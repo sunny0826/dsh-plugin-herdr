@@ -119,6 +119,8 @@ export function apply(ctx: Context, config: Config) {
       // CA-013：异步 bind 期间 agent 已被 dispose → 不注册/不上报，立即回收已创建的 pane
       if (disposedAgents.has(agentId)) {
         logger.warn('agent %s disposed during bind; closing pane %s', agentId, created.paneId)
+        // codex review P2：竞态分支处理完 dispose 后必须清除标记，避免 session id 复用误关新 pane
+        disposedAgents.delete(agentId)
         void cleanupPane(created)
         return null
       }
@@ -130,6 +132,9 @@ export function apply(ctx: Context, config: Config) {
       return null
     } finally {
       pending.delete(agentId)
+      // codex review P2：bind 失败/未创建时若 dispose 在途，其意图已由本次 bind 消费，
+      // 一并清除标记（竞态分支成功路径已在上面删除，这里兜底失败路径）
+      if (disposedAgents.has(agentId)) disposedAgents.delete(agentId)
     }
   }
 

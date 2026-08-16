@@ -411,6 +411,22 @@ test('CA-002: stdout is capped at MAX_CLI_OUTPUT_BYTES and reported truncated', 
   assert.equal(res.truncated, true, 'truncation is reported')
 })
 
+test('CR: non-ASCII output is capped by UTF-8 bytes, not UTF-16 code units', async () => {
+  // 每个“中”= 3 UTF-8 字节（2 UTF-16 码元）：旧实现按 length 累计会虚高
+  const chunk = '中'.repeat(400_000) // 1.2MB UTF-8 / 0.8M 码元
+  const client = makeAdapter([
+    (c) => {
+      c.stdout.emit('data', Buffer.from(chunk, 'utf8'))
+      c.stdout.emit('data', Buffer.from(chunk, 'utf8'))
+      c.emit('close', 0, null)
+    },
+  ])
+  const res = await client.paneRead({ pane_id: 'w9:p9' })
+  assert.equal(res.truncated, true)
+  assert.ok(Buffer.byteLength(res.text, 'utf8') <= MAX_CLI_OUTPUT_BYTES, `bytes=${Buffer.byteLength(res.text)}`)
+  assert.ok(Buffer.byteLength(res.text, 'utf8') > MAX_CLI_OUTPUT_BYTES - 64, 'capped near the limit (not far under)')
+})
+
 test('CA-002: runCommand result reports truncated when pane read exceeds the cap', async () => {
   const big = 'z'.repeat(MAX_CLI_OUTPUT_BYTES + 100)
   const readBig = (c: FakeChild) => { if (true) emitText(c, big) }
