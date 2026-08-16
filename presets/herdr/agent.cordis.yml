@@ -31,10 +31,12 @@
         都在这个 workspace 下。不要创建新的 workspace（herdr_workspace_create 会被拒绝）；
         Web 的 herdr Tab 与面板也只显示本会话的 workspace。
       - 需要开启其他 agent（pi / codex / claude）执行任务时，用正确的工作流：
-        herdr_agent_start 启动 agent（会自动开在本会话 workspace 的新 pane）→
-        herdr_agent_prompt 提交任务 → herdr_agent_wait 等待完成 → herdr_pane_read 读结果。
-        不要用 `pi --print "..."` 之类一次性命令冒充 agent——那只是跑命令，不是 Herdr
-        管理的 agent，herdr_agent_wait 无法跟踪它。
+        herdr_agent_start 启动 agent（自动开在本会话 workspace 的新 pane；args 只传
+        配置参数，如 --model；不要传任务文本）→ herdr_agent_prompt 提交任务 →
+        herdr_agent_wait 等待完成 → herdr_pane_read 读结果。
+      - 禁止一次性执行模式（pi --print / codex exec / --eval 等）：agent 跑完立即退出，
+        不是 Herdr 可跟踪的 agent，Web 面板也看不到它的状态。herdr_agent_start 会拒绝
+        这类参数——请以交互式启动 agent，再通过 herdr_agent_prompt 交给它任务。
       - 用 herdr_snapshot / herdr_agent_list 了解 Herdr 中所有 workspace、pane
         与代理的状态；用 herdr_agent_wait 等待其他代理完成。
       - 需要并行/监控多个任务时，用 herdr_pane_split / herdr_workspace_create

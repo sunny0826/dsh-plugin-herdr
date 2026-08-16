@@ -10,7 +10,12 @@ import { requireNonEmpty, toToolError } from './shared.ts'
  * 缺省 pane_id 时在本会话专属 workspace 中（绑定 pane 旁 split）启动，
  * 新 pane 继承项目目录 cwd——开启的 agent 落在本会话 workspace 内。
  * 启动后应使用 herdr_agent_prompt 提交任务、herdr_agent_wait 等待完成。
+ * 拒绝一次性执行模式（pi --print / codex exec 等）——那只是跑命令且立即退出，
+ * 不是可跟踪的 Herdr agent，面板也无法显示其状态。
  */
+
+/** 一次性执行模式标志（agent 跑完即退出，herdr 无法持续跟踪）。 */
+const ONESHOT_ARGS = new Set(['--print', '-p', 'exec', '--execute', '--eval', '-e'])
 export function registerAgentStart(ctx: Context) {
   ctx.tools.register(defineTool({
     name: 'herdr_agent_start',
@@ -26,7 +31,7 @@ export function registerAgentStart(ctx: Context) {
       kind: { type: 'string', required: true, description: 'Agent kind to start (e.g. pi, codex, claude); check your install' },
       name: { type: 'string', description: 'Agent name, follow <kind>-<purpose> (e.g. pi-disk-check); default auto-generates <kind>-<n> with a unique suffix' },
       pane_id: { type: 'string', description: 'Existing pane to start the agent in; default creates a new split pane in this session workspace' },
-      args: { type: 'array', items: { type: 'string' }, description: 'Native arguments passed to the agent after --' },
+      args: { type: 'array', items: { type: 'string' }, description: 'Native arguments passed to the agent after --. CONFIGURATION FLAGS ONLY (e.g. --model); never pass task text or one-shot mode flags (--print, -p, exec, --execute, --eval) — those run a command and exit, which is not a tracked Herdr agent. Submit the task with herdr_agent_prompt instead.' },
       timeout_ms: { type: 'number', description: 'Startup timeout in ms (> 3000 and <= 300000; default 30000)' },
     },
     output: {
@@ -56,6 +61,15 @@ export function registerAgentStart(ctx: Context) {
     async execute(args, exec) {
       try {
         requireNonEmpty(args.kind, 'kind')
+        // 拒绝一次性执行模式：agent 跑完即退出，herdr 无法持续跟踪，面板无状态可显示
+        const oneShot = (args.args ?? []).find(a => ONESHOT_ARGS.has(a))
+        if (oneShot) {
+          throw new Error(
+            'one-shot mode flag ' + oneShot + ' is not allowed in args: it runs a command and ' +
+            'exits — not a tracked Herdr agent. Start the agent interactively (configuration ' +
+            'flags only, no task text) and submit the task with herdr_agent_prompt instead.',
+          )
+        }
         let paneId = args.pane_id
         if (!paneId) {
           const bound = exec.agent ? getBindingRegistry().get(exec.agent.id) : undefined

@@ -135,6 +135,32 @@ test('agent-start: interactive_ready agents skip the wait', async () => {
   }
 })
 
+
+test('agent-start: rejects one-shot mode args (--print / exec)', async () => {
+  const { defs } = makeHarness({})
+  const run = defs.find(d => d.name === 'herdr_agent_start')!
+  await assert.rejects(() => run.execute({ kind: 'pi', pane_id: 'w1:p1', args: ['--print', 'check disk'] }, agentExec), /one-shot mode flag --print/)
+  await assert.rejects(() => run.execute({ kind: 'codex', pane_id: 'w1:p1', args: ['exec', 'ip addr'] }, agentExec), /one-shot mode flag exec/)
+})
+
+test('agent-start: allows configuration-only args (e.g. --model)', async () => {
+  const { defs } = makeHarness({
+    paneSplit: async () => ({ pane_id: 'w1:p9' }),
+    agentStart: async (req: Record<string, unknown>) => {
+      assert.deepEqual(req.args, ['--model', 'claude-4'])
+      return { pane_id: 'w1:p9', agent: 'claude', agent_status: 'idle', interactive_ready: true }
+    },
+  })
+  getBindingRegistry().set('sess-A', { pane_id: 'w1:p5', created: true, workspace_id: 'w1' })
+  try {
+    const run = defs.find(d => d.name === 'herdr_agent_start')!
+    const res = await run.execute({ kind: 'claude', pane_id: 'w1:p9', args: ['--model', 'claude-4'] }, agentExec)
+    assert.equal((res as { agent: string }).agent, 'claude')
+  } finally {
+    getBindingRegistry().delete('sess-A')
+  }
+})
+
 test('agent-start: non-busy errors still fail immediately', async () => {
   const { defs } = makeHarness({
     paneSplit: async () => ({ pane_id: 'w1:p9' }),
