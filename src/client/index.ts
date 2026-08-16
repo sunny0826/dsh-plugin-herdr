@@ -235,6 +235,12 @@ export abstract class HerdrClient extends Service {
   abstract paneSplit(req: PaneSplitRequest): Promise<{ pane_id: string }>
   /** 关闭 pane（会话专属 pane 的清理；pane 内进程随之终止）。 */
   abstract paneClose(paneId: string): Promise<void>
+  /** 关闭 workspace（含其中所有 pane；T01-E：不存在时报 workspace_not_found）。 */
+  abstract workspaceClose(workspaceId: string): Promise<void>
+  /** 重命名 workspace（多词标签由 CLI join 空格；T01-D）。 */
+  abstract workspaceRename(workspaceId: string, label: string): Promise<void>
+  /** 重命名 pane；label 为空（null/空白）走 --clear 清除名称（T01-A/B）。 */
+  abstract paneRename(paneId: string, label: string | null): Promise<void>
   abstract paneSendKeys(req: PaneSendKeysRequest): Promise<void>
   abstract paneRead(req: PaneReadRequest): Promise<{ text: string; truncated: boolean }>
   abstract paneLayout(req: PaneLayoutRequest): Promise<unknown>

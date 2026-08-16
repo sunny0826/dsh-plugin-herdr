@@ -1,5 +1,5 @@
 // CA-003：工具输出契约测试 —— 每个工具的 execute 返回值必须通过其声明的 output.schema。
-// 覆盖 14 个工具（含 socket-only 的 layout_apply）的 completed/background 分支，
+// 覆盖 18 个工具（含 socket-only 的 layout_apply）的 completed/background 分支，
 // 以及 herdr 抛错时 execute 的 error 路径（toToolError 归一化）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -20,6 +20,10 @@ import { registerAgentPrompt } from '../../src/tools/agent-prompt.ts'
 import { registerAgentExplain } from '../../src/tools/agent-explain.ts'
 import { registerAgentSendKeys } from '../../src/tools/agent-send-keys.ts'
 import { registerNotification } from '../../src/tools/notification.ts'
+import { registerWorkspaceClose } from '../../src/tools/workspace-close.ts'
+import { registerPaneClose } from '../../src/tools/pane-close.ts'
+import { registerWorkspaceRename } from '../../src/tools/workspace-rename.ts'
+import { registerPaneRename } from '../../src/tools/pane-rename.ts'
 
 /** 基于 env-findings / cli 单测的 herdr 服务 fixture（CLI 与 socket 传输共用形状）。 */
 function makeHerdr() {
@@ -58,6 +62,10 @@ function makeHerdr() {
     agentSendKeys: async () => undefined,
     agentExplain: async () => ({ reason: 'detected via pane activity', agent: 'claude' }),
     workspaceCreate: async () => ({ workspace_id: 'w1', pane_id: 'w1:p1' }),
+    workspaceClose: async (_id: string) => undefined,
+    paneClose: async (_id: string) => undefined,
+    workspaceRename: async (_id: string, _label: string) => undefined,
+    paneRename: async (_id: string, _label: string | null) => undefined,
   }
 }
 
@@ -89,7 +97,11 @@ function registerAll(opts: { allowBackground?: boolean; herdr?: ReturnType<typeo
   registerAgentExplain(ctx)
   registerAgentSendKeys(ctx)
   registerNotification(ctx)
-  assert.equal(defs.length, 14, 'all 14 tools registered')
+  registerWorkspaceClose(ctx)
+  registerPaneClose(ctx)
+  registerWorkspaceRename(ctx)
+  registerPaneRename(ctx)
+  assert.equal(defs.length, 18, 'all 18 tools registered')
   return defs.map(def => ({
     name: def.name,
     def,
@@ -115,9 +127,13 @@ const CONTRACT_CASES: Record<string, Record<string, unknown>> = {
   herdr_agent_send_keys: { target: 'w1:p1', keys: ['ctrl+c'] },
   herdr_agent_explain: { target: 'w1:p1' },
   herdr_workspace_create: { label: 'demo', cwd: '/tmp' },
+  herdr_workspace_close: { workspace_id: 'w1' },
+  herdr_pane_close: { pane_id: 'w1:p1' },
+  herdr_workspace_rename: { workspace_id: 'w1', label: 'renamed' },
+  herdr_pane_rename: { pane_id: 'w1:p1', label: 'my pane' },
 }
 
-test('CA-003: all 14 tools\' completed outputs validate against their declared schema', async () => {
+test('CA-003: all 18 tools\' completed outputs validate against their declared schema', async () => {
   const tools = registerAll()
   for (const { name, def, args } of tools) {
     const value = await def.execute(args, exec)
@@ -178,4 +194,49 @@ test('CA-003: arg validation rejects invalid input before reaching herdr', async
   await assert.rejects(() => run.def.execute({ command: '   ' }, exec), /command must be a non-empty string/)
   const send = tools.find(t => t.name === 'herdr_pane_send_keys')!
   await assert.rejects(() => send.def.execute({ pane_id: 'w1:p1', keys: [] }, exec), /keys must be a non-empty array/)
+})
+
+test('CA-003: workspace_close returns closed_panes from snapshot count', async () => {
+  const herdr = makeHerdr()
+  let closedWs: string | null = null
+  herdr.workspaceClose = async (id: string) => { closedWs = id }
+  const tools = registerAll({ herdr })
+  const ws = tools.find(t => t.name === 'herdr_workspace_close')!
+  const value = await ws.def.execute({ workspace_id: 'w1' }, exec)
+  // fixture snapshot 里 w1 有 1 个 pane
+  assert.deepEqual(value, { ok: true, closed_panes: 1 })
+  assert.equal(closedWs, 'w1')
+})
+
+test('CA-003: workspace_close falls back to closed_panes=0 when snapshot fails', async () => {
+  const herdr = makeHerdr()
+  herdr.snapshot = async () => { throw new HerdrCliError('HERDR_UNAVAILABLE', 'down') }
+  const tools = registerAll({ herdr })
+  const ws = tools.find(t => t.name === 'herdr_workspace_close')!
+  // 快照失败不阻塞关闭，仍返回 ok:true + closed_panes:0
+  const value = await ws.def.execute({ workspace_id: 'w1' }, exec)
+  assert.deepEqual(value, { ok: true, closed_panes: 0 })
+})
+
+test('CA-003: pane_rename null/empty label calls paneRename clear path', async () => {
+  const herdr = makeHerdr()
+  let cleared: { pane: string; label: string | null } | null = null
+  herdr.paneRename = async (pane: string, label: string | null) => { cleared = { pane, label } }
+  const tools = registerAll({ herdr })
+  const pr = tools.find(t => t.name === 'herdr_pane_rename')!
+  await pr.def.execute({ pane_id: 'w1:p1', label: null }, exec)
+  assert.deepEqual(cleared, { pane: 'w1:p1', label: null })
+  await pr.def.execute({ pane_id: 'w1:p1', label: '' }, exec)
+  // 空 label 归一为 null（走 --clear）
+  assert.deepEqual(cleared, { pane: 'w1:p1', label: null })
+})
+
+test('CA-003: rename label length validation rejects >64 characters', async () => {
+  const tools = registerAll()
+  const wr = tools.find(t => t.name === 'herdr_workspace_rename')!
+  await assert.rejects(() => wr.def.execute({ workspace_id: 'w1', label: 'x'.repeat(65) }, exec), /label must be at most 64 characters/)
+  const pr = tools.find(t => t.name === 'herdr_pane_rename')!
+  await assert.rejects(() => pr.def.execute({ pane_id: 'w1:p1', label: 'y'.repeat(65) }, exec), /label must be at most 64 characters/)
+  // 64 恰好通过
+  await wr.def.execute({ workspace_id: 'w1', label: 'x'.repeat(64) }, exec)
 })

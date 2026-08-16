@@ -228,6 +228,89 @@ test('session is threaded through every command', async () => {
 })
 
 // ---------------------------------------------------------------------------
+// T04：workspace/pane close 与 rename（envelope 模式；T01-E/F 实测语义）
+// ---------------------------------------------------------------------------
+
+test('workspaceClose success envelope resolves void', async () => {
+  const seen: string[][] = []
+  const client = makeAdapter([
+    (c, _cmd, args) => { seen.push(args); emitJson(c, { id: 'c', result: { type: 'ok' } }) },
+  ])
+  await client.workspaceClose('wB')
+  assert.deepEqual(seen[0], ['workspace', 'close', 'wB'])
+})
+
+test('workspaceClose error envelope (exit 1, stdout) throws with workspace_not_found', async () => {
+  // T01-E：close 错误 envelope 在 stdout、exit 1；envelope 模式须把错误码带给工具层
+  const client = makeAdapter([
+    (c) => {
+      c.stdout.emit('data', Buffer.from(JSON.stringify({ id: 'c', error: { code: 'workspace_not_found', message: 'workspace wZzz not found' } })))
+      c.emit('close', 1, null)
+    },
+  ])
+  await assert.rejects(() => client.workspaceClose('wZzz'), (err: Error) => {
+    assert.ok(err instanceof HerdrCliError)
+    assert.equal(err.code, 'HERDR_ERROR')
+    assert.match(err.message, /workspace close/)
+    assert.match(err.message, /workspace_not_found/)
+    return true
+  })
+})
+
+test('paneClose now surfaces pane_not_found from a stdout error envelope (T04 envelope mode)', async () => {
+  // T01-E：已关闭 pane 再次 close → pane_not_found、exit 1；rawText 本会丢码
+  const client = makeAdapter([
+    (c) => {
+      c.stdout.emit('data', Buffer.from(JSON.stringify({ id: 'c', error: { code: 'pane_not_found', message: 'pane w1:p9 not found' } })))
+      c.emit('close', 1, null)
+    },
+  ])
+  await assert.rejects(() => client.paneClose('w1:p9'), (err: Error) => {
+    assert.ok(err instanceof HerdrCliError)
+    assert.equal(err.code, 'HERDR_ERROR')
+    assert.match(err.message, /pane close/)
+    assert.match(err.message, /pane_not_found/)
+    return true
+  })
+})
+
+test('workspaceRename splits multi-word label into positional args', async () => {
+  const seen: string[][] = []
+  const client = makeAdapter([
+    (c, _cmd, args) => { seen.push(args); emitJson(c, { id: 'r', result: { type: 'workspace_info', workspace: { workspace_id: 'wB' } } }) },
+  ])
+  await client.workspaceRename('wB', 'my probe ws')
+  assert.deepEqual(seen[0], ['workspace', 'rename', 'wB', 'my', 'probe', 'ws'])
+})
+
+test('paneRename null label emits --clear after pane_id', async () => {
+  const seen: string[][] = []
+  const client = makeAdapter([
+    (c, _cmd, args) => { seen.push(args); emitJson(c, { id: 'r', result: { type: 'pane_info', pane: { pane_id: 'wB:p1' } } }) },
+  ])
+  await client.paneRename('wB:p1', null)
+  assert.deepEqual(seen[0], ['pane', 'rename', 'wB:p1', '--clear'])
+})
+
+test('paneRename blank label also emits --clear (pane_id kept, before --clear)', async () => {
+  const seen: string[][] = []
+  const client = makeAdapter([
+    (c, _cmd, args) => { seen.push(args); emitJson(c, { id: 'r', result: { type: 'pane_info', pane: { pane_id: 'wB:p2' } } }) },
+  ])
+  await client.paneRename('wB:p2', '   ')
+  assert.deepEqual(seen[0], ['pane', 'rename', 'wB:p2', '--clear'])
+})
+
+test('paneRename splits non-empty label into positional words', async () => {
+  const seen: string[][] = []
+  const client = makeAdapter([
+    (c, _cmd, args) => { seen.push(args); emitJson(c, { id: 'r', result: { type: 'pane_info', pane: { pane_id: 'wB:p1' } } }) },
+  ])
+  await client.paneRename('wB:p1', 'my agent demo')
+  assert.deepEqual(seen[0], ['pane', 'rename', 'wB:p1', 'my', 'agent', 'demo'])
+})
+
+// ---------------------------------------------------------------------------
 // CA-001：CLI 超时 / Abort / 退出码处理
 // ---------------------------------------------------------------------------
 
@@ -357,14 +440,15 @@ test('CA-001: non-zero exit with unparseable output throws stable HERDR_ERROR', 
 })
 
 test('CA-001: rawText command with non-zero exit throws instead of reporting success', async () => {
-  // pane close/send-keys/run 等 rawText 命令此前非零退出被当作成功（CA-001 P0）
+  // send-keys/run 等 rawText 命令此前非零退出被当作成功（CA-001 P0）
+  // （paneClose 已于 T04 改为 envelope 模式，故此处用 paneSendKeys 验证 rawText 路径）
   const client = makeAdapter([
     (c) => { c.stderr.emit('data', Buffer.from('pane not found')); c.emit('close', 1, null) },
   ])
-  await assert.rejects(() => client.paneClose('w9:p9'), (err: Error) => {
+  await assert.rejects(() => client.paneSendKeys({ pane_id: 'w9:p9', keys: ['x'] }), (err: Error) => {
     assert.ok(err instanceof HerdrCliError)
     assert.equal(err.code, 'HERDR_ERROR')
-    assert.match(err.message, /pane close/)
+    assert.match(err.message, /send-keys/)
     assert.match(err.message, /exit 1/)
     return true
   })

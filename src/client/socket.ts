@@ -231,6 +231,19 @@ export class SocketHerdrClient extends HerdrClient {
     await this.callOnce('pane.close', { pane_id: paneId })
   }
 
+  async workspaceClose(workspaceId: string): Promise<void> {
+    await this.callOnce('workspace.close', { workspace_id: workspaceId })
+  }
+
+  async workspaceRename(workspaceId: string, label: string): Promise<void> {
+    await this.callOnce('workspace.rename', { workspace_id: workspaceId, label })
+  }
+
+  async paneRename(paneId: string, label: string | null): Promise<void> {
+    // socket 协议：label 传 null 即清除名称（对应 CLI --clear）
+    await this.callOnce('pane.rename', { pane_id: paneId, label })
+  }
+
   async paneSendKeys(req: PaneSendKeysRequest): Promise<void> {
     await this.callOnce('pane.send_keys', { pane_id: req.pane_id, keys: req.keys })
   }

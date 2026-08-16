@@ -256,7 +256,25 @@ export class CliHerdrClient extends HerdrClient {
   }
 
   async paneClose(paneId: string): Promise<void> {
-    await this.runCli(['pane', 'close', paneId], { rawText: true })
+    await this.closeOrFail('pane close', ['pane', 'close', paneId])
+  }
+
+  async workspaceClose(workspaceId: string): Promise<void> {
+    await this.closeOrFail('workspace close', ['workspace', 'close', workspaceId])
+  }
+
+  async workspaceRename(workspaceId: string, label: string): Promise<void> {
+    // T01-D：多词标签由 CLI 把 LABEL... 位置参数 join 空格；拆参传递与实测一致
+    await this.runCli(['workspace', 'rename', workspaceId, ...label.split(/\s+/)])
+  }
+
+  async paneRename(paneId: string, label: string | null): Promise<void> {
+    // 实测（env-findings v2 关键坑）：--clear 必须在 pane_id 之后且 pane_id 不可省略；
+    // 空 label（null/空白）→ --clear；否则把单词拆为位置参数（CLI join 空格）
+    const args = ['pane', 'rename', paneId]
+    if (label == null || label.trim() === '') args.push('--clear')
+    else args.push(...label.split(/\s+/))
+    await this.runCli(args)
   }
 
   async paneSendKeys(req: PaneSendKeysRequest): Promise<void> {
@@ -355,6 +373,19 @@ export class CliHerdrClient extends HerdrClient {
   // -------------------------------------------------------------------------
   // 内部工具
   // -------------------------------------------------------------------------
+
+  /**
+   * 执行 close 类命令（envelope 模式而非 rawText）。
+   * T01-E/F：close 成功 stdout 有 result envelope、exit 0；错误时 exit 1 + error envelope 在 stdout。
+   * envelope 模式才能把 pane_not_found / workspace_not_found 业务错误码带给工具层
+   * （rawText 非零退出会抛泛化 HERDR_ERROR 丢失错误码）。
+   */
+  private async closeOrFail(cmd: string, args: string[]): Promise<void> {
+    const { error } = await this.runCli(args)
+    if (error) {
+      throw new HerdrCliError('HERDR_ERROR', `${cmd} failed: ${error.code ?? 'unknown'}: ${error.message ?? ''}`)
+    }
+  }
 
   private parseEnvelope(raw: string): CliEnvelope | undefined {
     const trimmed = raw.trim()
