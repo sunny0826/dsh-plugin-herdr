@@ -39,3 +39,18 @@ export function assertPreflight(opts) {
   console.error('SKIPPED: integration test preconditions missing -> ' + reasons.join('; '))
   process.exit(0)
 }
+
+/**
+ * 确保至少一个 workspace 存在：全新 herdr server（如 CI runner 上刚启动的）
+ * 没有任何 workspace/pane，snapshot 断言和 pane split 会失败。
+ * 必要时创建一个并返回清理函数（调用方在 finally 中执行）。
+ */
+export async function ensureWorkspace(herdr) {
+  const snap = await herdr.snapshot()
+  if (snap.workspaces.length > 0) return () => {}
+  const w = await herdr.workspaceCreate({ label: 'dsh-integration', cwd: process.env.HOME ?? '/' })
+  console.log(`  (created workspace ${w.workspace_id} for integration tests)`)
+  return () => {
+    try { execFileSync('herdr', ['workspace', 'close', w.workspace_id], { encoding: 'utf8' }) } catch { /* ignore */ }
+  }
+}

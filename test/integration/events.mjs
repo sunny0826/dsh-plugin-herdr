@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../../lib/index.mjs'
 import { apply as applyClient } from '../../lib/client-entry.mjs'
-import { assertPreflight } from './preflight.mjs'
+import { assertPreflight, ensureWorkspace } from './preflight.mjs'
 
 const CONFIG = {
   cliPath: 'herdr',
@@ -47,7 +47,12 @@ const check = async (name, fn) => {
   }
 }
 
+let closeWorkspace = () => {}
+
 try {
+  // 全新 server 没有默认 workspace（CI runner 场景）：先确保存在，split 才有目标 pane
+  closeWorkspace = await ensureWorkspace(ctx.herdr)
+
   // 等待订阅建立
   await new Promise(res => setTimeout(res, 1000))
   await check('subscription channel connected', () => {
@@ -87,6 +92,7 @@ try {
   // agent 状态事件（无 agent 时可能没有；只验证机制不报错）
   console.log('  (agent-state events observed:', agentEvents.length, ')')
 } finally {
+  closeWorkspace()
   await f.dispose()
   await cf.dispose()
   console.log(failures === 0 ? 'ALL EVENT CHECKS PASSED' : failures + ' CHECK(S) FAILED')

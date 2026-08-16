@@ -28,7 +28,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
+          # 不用 cache: pnpm：pnpm 10 的 store 路径与 setup-node 预期不符，
+          # post 步骤报 "Path Validation Error" 导致整个 job 失败（已实测）；依赖很小，不缓存也够快
       - name: Enable pnpm
         run: corepack enable
       - name: Install dependencies
@@ -55,7 +56,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
+          # 不用 cache: pnpm：pnpm 10 的 store 路径与 setup-node 预期不符，
+          # post 步骤报 "Path Validation Error" 导致整个 job 失败（已实测）；依赖很小，不缓存也够快
       - name: Enable pnpm
         run: corepack enable
       - name: Install dependencies
