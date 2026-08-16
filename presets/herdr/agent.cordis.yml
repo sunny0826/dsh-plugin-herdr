@@ -1,9 +1,9 @@
 # The `herdr` agent preset (Herdr 模式): 会话绑定 Herdr.
 #
 # 新建会话时选择"herdr"预设，本对话即被视为运行在 Herdr 中的 agent：
-# - 每个会话自动获得一个专属 Herdr pane（焦点 pane 右侧 split，或新建
-#   workspace 的 root pane；也可用 paneId 固定绑定）——Herdr 侧边栏实时
-#   显示该 pane 上 dsh 的状态（working / idle）；
+# - 每个会话启动时在项目目录创建一个专属 workspace（root pane 即绑定 pane），
+#   本会话产出的所有 pane 都放进这个 workspace；也可用 paneId 固定绑定——
+#   Herdr 侧边栏实时显示绑定 pane 上 dsh 的状态（working / idle）；
 # - 模型人设引导优先使用 herdr_* 工具操作 workspace / pane / agent；
 # - herdr 工具与面板由 host 组合（dsh-plugin-herdr）提供，本文件只装配会话模式。
 
@@ -22,6 +22,19 @@
       - 需要执行终端任务（跑测试、起服务、观察其他代理）时，优先使用
         herdr_pane_run 在 Herdr 的持久 pane 中运行，而不是本地 bash——
         pane 在 detach 后继续运行，结果可随时用 herdr_pane_read 读取。
+      - herdr_pane_run 会优先复用本会话自己的 pane（无需 pane_id）；不要为
+        每条命令都新建 pane——每次新建都会在 workspace 里累积一个纯终端 pane。
+        只有需要并行/独立隔离的任务时才显式传 workspace_id/direction 新建。
+      - herdr_pane_run 默认在本会话 pane 的目录（项目目录）运行；涉及其他
+        目录时显式传 cwd。
+      - 本会话有一个专属 workspace（项目目录）；本会话产出的所有 pane 和 agent
+        都在这个 workspace 下。不要创建新的 workspace（herdr_workspace_create 会被拒绝）；
+        Web 的 herdr Tab 与面板也只显示本会话的 workspace。
+      - 需要开启其他 agent（pi / codex / claude）执行任务时，用正确的工作流：
+        herdr_agent_start 启动 agent（会自动开在本会话 workspace 的新 pane）→
+        herdr_agent_prompt 提交任务 → herdr_agent_wait 等待完成 → herdr_pane_read 读结果。
+        不要用 `pi --print "..."` 之类一次性命令冒充 agent——那只是跑命令，不是 Herdr
+        管理的 agent，herdr_agent_wait 无法跟踪它。
       - 用 herdr_snapshot / herdr_agent_list 了解 Herdr 中所有 workspace、pane
         与代理的状态；用 herdr_agent_wait 等待其他代理完成。
       - 需要并行/监控多个任务时，用 herdr_pane_split / herdr_workspace_create
@@ -34,10 +47,10 @@
 - id: herdr-session-mode
   name: 'dsh-plugin-herdr/session-mode'
   config:
-    # 固定绑定 pane（所有会话共用）；留空则每个会话自动创建专属 pane：
-    # 焦点 pane 右侧 split；无焦点时新建 workspace（root pane）。
+    # 固定绑定 pane（所有会话共用）；留空则每个会话自动在项目目录
+    # 创建专属 workspace（root pane 即绑定 pane）。
     paneId: ''
-    # 自动创建 pane 时的 workspace label（新建 workspace 场景）。
+    # 专属 workspace 的 label（多个 herdr 会话各自独立 workspace）。
     label: dsh
     # 新 pane 的 shell 工作目录（可选）。
     # cwd: ''

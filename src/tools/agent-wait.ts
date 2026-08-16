@@ -27,7 +27,9 @@ export function registerAgentWait(ctx: Context, opts: AgentWaitToolOptions) {
     name: 'herdr_agent_wait',
     description:
       'Wait until an agent in a Herdr pane reaches one of the requested states (e.g. done). ' +
-      'Use after starting an agent or command in a pane to block until it finishes.',
+      'Use after herdr_agent_prompt or after starting an agent to block until it finishes. ' +
+      'Only tracked Herdr agents (started with herdr_agent_start) qualify — a one-shot command ' +
+      'in a pane is not an agent and never matches.',
     // 条件参数：闸门关闭时模型看不到 run_in_background（不生成即不会误用）
     parameters: {
       target: { type: 'string', required: true, description: 'Pane id (e.g. w1:p2) or agent name' },

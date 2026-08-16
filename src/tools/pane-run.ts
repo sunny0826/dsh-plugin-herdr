@@ -1,6 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { RunCommandResult } from '../client/index.ts'
+import { getBindingRegistry } from '../binding-registry.ts'
 import { startWaitJob } from '../jobs.ts'
 import { requireNonEmpty, requireRatio, toToolError } from './shared.ts'
 
@@ -21,8 +22,12 @@ export function registerPaneRun(ctx: Context, opts: PaneRunToolOptions) {
   ctx.tools.register(defineTool({
     name: 'herdr_pane_run',
     description:
-      'Run a shell command in a Herdr pane (persistent terminal). Creates a new split pane ' +
-      'unless pane_id is given; waits up to wait_ms for output to settle. Returns the pane output.',
+      'Run a shell command in a Herdr pane (persistent terminal). This session owns a dedicated ' +
+      'workspace created in the project directory at session start; every pane this session ' +
+      'creates lives in that workspace. Reuses the session\'s own bound pane by default, or the ' +
+      'given pane_id; pass workspace_id/direction to deliberately create a new pane (still ' +
+      'inside the session workspace unless workspace_id overrides). Do NOT spawn one pane per ' +
+      'command — reuse instead. Waits up to wait_ms for output to settle. Returns the pane output.',
     // 条件参数：闸门关闭时模型看不到 run_in_background（不生成即不会误用）
     parameters: {
       command: { type: 'string', required: true, description: 'Shell command to run (executed via sh -c)' },
@@ -69,7 +74,7 @@ export function registerPaneRun(ctx: Context, opts: PaneRunToolOptions) {
       return {
         card: 'terminal',
         title: args.command,
-        description: args.pane_id ? `reusing pane ${args.pane_id}` : 'new split pane',
+        description: args.pane_id ? `reusing pane ${args.pane_id}` : 'reuse bound pane or new split',
         cwd: args.cwd,
       }
     },
@@ -84,9 +89,30 @@ export function registerPaneRun(ctx: Context, opts: PaneRunToolOptions) {
       try {
         requireNonEmpty(args.command, 'command')
         if (args.ratio != null) requireRatio(args.ratio, 'ratio')
+        // 无 pane_id 时：默认复用本会话绑定 pane（专属 workspace 的 root pane，
+        // 避免每次调用都新建 split 累积 pane）；显式给出 direction/workspace_id
+        // （新建意图）时以绑定 pane 为 split target——新 pane 落在本会话专属
+        // workspace、cwd 继承项目目录。无绑定（非 herdr 会话）保持原行为。
+        let paneId = args.pane_id
+        const bound = exec.agent ? getBindingRegistry().get(exec.agent.id) : undefined
+        if (!paneId && bound) {
+          if (args.direction || args.workspace_id) {
+            const { pane_id } = await ctx.herdr.paneSplit({
+              pane_id: bound.pane_id,
+              direction: args.direction ?? 'right',
+              ratio: args.ratio,
+              cwd: args.cwd,
+              env: args.env as Record<string, string> | undefined,
+              workspace_id: args.workspace_id,
+            })
+            paneId = pane_id
+          } else {
+            paneId = bound.pane_id
+          }
+        }
         const request = {
           command: args.command,
-          pane_id: args.pane_id,
+          pane_id: paneId,
           workspace_id: args.workspace_id,
           direction: args.direction,
           ratio: args.ratio,

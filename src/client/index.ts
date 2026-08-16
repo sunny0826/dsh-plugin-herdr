@@ -1,5 +1,6 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type {
+  AgentInfo,
   AgentStatus,
   PaneInfo,
   PaneLayoutSnapshot,
@@ -14,7 +15,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export type { AgentStatus, PaneAgentState, SplitDirection, ReadSource } from './types.js'
+export type { AgentInfo, AgentStatus, PaneAgentState, SplitDirection, ReadSource } from './types.js'
 
 // ---------------------------------------------------------------------------
 // 领域类型（字段名对齐 Herdr 协议 snake_case，便于对照 herdr api schema）
@@ -149,6 +150,15 @@ export interface AgentPromptRequest {
   timeout_ms?: number
 }
 
+export interface AgentStartRequest {
+  name: string
+  kind: string
+  pane_id: string
+  args?: string[]
+  /** 启动超时（> 3000 且 <= 300000）。 */
+  timeout_ms?: number
+}
+
 export interface AgentExplainRequest {
   target?: string
 }
@@ -249,6 +259,8 @@ export abstract class HerdrClient extends Service {
   abstract paneLayout(req: PaneLayoutRequest): Promise<unknown>
   abstract layoutApply(req: LayoutApplyRequest): Promise<unknown>
   abstract agentPrompt(req: AgentPromptRequest, signal: AbortSignal): Promise<AgentPromptResult>
+  /** 在指定 pane 启动一个 agent（agent.start；返回识别到的 agent 信息）。 */
+  abstract agentStart(req: AgentStartRequest): Promise<AgentInfo>
   abstract agentExplain(req: AgentExplainRequest): Promise<unknown>
   abstract agentSendKeys(req: AgentSendKeysRequest): Promise<void>
   abstract showNotification(req: NotificationShowRequest): Promise<void>

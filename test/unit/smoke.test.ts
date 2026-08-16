@@ -52,9 +52,10 @@ test('tools declare UI cards (presentCall)', async () => {
   const fiber = await ctx.plugin({ name: 'dsh-plugin-herdr', apply, inject: ['tools', 'herdr', 'jobs'] }, FULL_CONFIG)
   try {
     const names = registered.map(r => r.name)
-    // 全量 socket 迁移后 layout_apply 恒注册（18 个工具）
-    assert.equal(names.length, 18, 'all tools registered: ' + names.join(','))
+    // 全量 socket 迁移后 layout_apply 恒注册；agent_start 恒注册（19 个工具）
+    assert.equal(names.length, 19, 'all tools registered: ' + names.join(','))
     assert.ok(names.includes('herdr_layout_apply'), 'layout_apply registered (socket transport only)')
+    assert.ok(names.includes('herdr_agent_start'), 'agent_start registered')
     const paneRun = registered.find(r => r.name === 'herdr_pane_run')
     assert.ok(paneRun?.presentCall, 'herdr_pane_run should declare presentCall')
     const call = paneRun!.presentCall!({ command: 'echo hi' } as never) as { card: string }

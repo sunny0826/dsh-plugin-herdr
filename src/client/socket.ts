@@ -10,6 +10,7 @@ import type {
   AgentFilter,
   AgentPromptRequest,
   AgentPromptResult,
+  AgentStartRequest,
   AgentSendKeysRequest,
   AgentStatus,
   ClearAgentAuthorityRequest,
@@ -308,6 +309,19 @@ export class SocketHerdrClient extends HerdrClient {
       ...status !== undefined ? { status } : {},
       ...req.wait ? { waited_ms: Date.now() - start } : {},
     }
+  }
+
+  async agentStart(req: AgentStartRequest): Promise<import('./types.js').AgentInfo> {
+    const { result } = await this.callOnce('agent.start', {
+      name: req.name,
+      kind: req.kind,
+      pane_id: req.pane_id,
+      args: req.args ?? undefined,
+      timeout_ms: req.timeout_ms ?? null,
+    })
+    const res = result as HerdrResultMap['agent.start'] | undefined
+    if (!res?.agent) throw new HerdrError('HERDR_PROTOCOL', 'agent.start response missing agent')
+    return res.agent
   }
 
   async agentExplain(req: AgentExplainRequest): Promise<unknown> {
