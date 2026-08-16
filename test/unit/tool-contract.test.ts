@@ -1,11 +1,11 @@
 // CA-003：工具输出契约测试 —— 每个工具的 execute 返回值必须通过其声明的 output.schema。
-// 覆盖 18 个工具（含 socket-only 的 layout_apply）的 completed/background 分支，
+// 覆盖 18 个工具（含 layout_apply）的 completed/background 分支，
 // 以及 herdr 抛错时 execute 的 error 路径（toToolError 归一化）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { validateJsonSchemaValue, type ToolDefinition, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
-import { HerdrCliError } from '../../src/client/cli.ts'
+import { HerdrError } from '../../src/client/error.ts'
 import { registerSnapshot } from '../../src/tools/snapshot.ts'
 import { registerAgentList } from '../../src/tools/agent-list.ts'
 import { registerPaneRun } from '../../src/tools/pane-run.ts'
@@ -25,7 +25,7 @@ import { registerPaneClose } from '../../src/tools/pane-close.ts'
 import { registerWorkspaceRename } from '../../src/tools/workspace-rename.ts'
 import { registerPaneRename } from '../../src/tools/pane-rename.ts'
 
-/** 基于 env-findings / cli 单测的 herdr 服务 fixture（CLI 与 socket 传输共用形状）。 */
+/** 基于 env-findings / socket 单测的 herdr 服务 fixture（socket 传输形状）。 */
 function makeHerdr() {
   return {
     snapshot: async () => ({
@@ -170,7 +170,7 @@ test('CA-003: herdr errors surface as normalized tool errors (isError path)', as
   const failingHerdr = makeHerdr()
   for (const key of Object.keys(failingHerdr) as Array<keyof ReturnType<typeof makeHerdr>>) {
     ;(failingHerdr[key] as () => Promise<unknown>) = async () => {
-      throw new HerdrCliError('HERDR_UNAVAILABLE', 'herdr server not running')
+      throw new HerdrError('HERDR_UNAVAILABLE', 'herdr server not running')
     }
   }
   const tools = registerAll({ herdr: failingHerdr })
@@ -178,7 +178,7 @@ test('CA-003: herdr errors surface as normalized tool errors (isError path)', as
     await assert.rejects(
       () => def.execute(args, exec),
       (err: Error) => {
-        // toToolError：HerdrCliError → 带 code 前缀的普通 Error
+        // toToolError：HerdrError → 带 code 前缀的普通 Error
         assert.ok(err instanceof Error)
         assert.match(err.message, /HERDR_UNAVAILABLE/)
         return true
@@ -210,7 +210,7 @@ test('CA-003: workspace_close returns closed_panes from snapshot count', async (
 
 test('CA-003: workspace_close falls back to closed_panes=0 when snapshot fails', async () => {
   const herdr = makeHerdr()
-  herdr.snapshot = async () => { throw new HerdrCliError('HERDR_UNAVAILABLE', 'down') }
+  herdr.snapshot = async () => { throw new HerdrError('HERDR_UNAVAILABLE', 'down') }
   const tools = registerAll({ herdr })
   const ws = tools.find(t => t.name === 'herdr_workspace_close')!
   // 快照失败不阻塞关闭，仍返回 ok:true + closed_panes:0

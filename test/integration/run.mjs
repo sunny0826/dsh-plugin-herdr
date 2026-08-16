@@ -11,8 +11,6 @@ import { assertPreflight, ensureWorkspace } from './preflight.mjs'
 assertPreflight()
 
 const CONFIG = {
-  cliPath: 'herdr',
-  transport: 'cli',
   timeoutMs: 15000,
   allowBackground: false,
   events: { enabled: false, maxReconnectMs: 30000 },

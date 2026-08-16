@@ -9,8 +9,6 @@ import { getBindingRegistry } from '../../src/binding-registry.ts'
 import type { Config as ConfigType } from '../../src/config.ts'
 
 const CONFIG: ConfigType = {
-  cliPath: 'herdr',
-  transport: 'cli',
   timeoutMs: 30000,
   allowBackground: false,
   events: { enabled: false, maxReconnectMs: 30000 },

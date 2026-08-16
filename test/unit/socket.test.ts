@@ -5,8 +5,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import { SocketHerdrClient } from '../../src/client/socket.ts'
-import { HerdrCliError } from '../../src/client/cli.ts'
+import { SocketHerdrClient, socketPing } from '../../src/client/socket.ts'
+import { HerdrError } from '../../src/client/error.ts'
 
 interface Req { id: string; method: string; params: unknown }
 
@@ -115,15 +115,16 @@ test('socket: subscription keeps connection open and dispatches events', async (
   }
 })
 
-test('socket: error envelope -> HERDR_ERROR with code message', async () => {
+test('socket: error envelope -> HERDR_ERROR with serverCode passthrough', async () => {
   const { path, server, dir } = await startFakeServer((conn, req, close) => {
     replyErrorAndClose(conn, req, 'internal_error', 'boom')
   })
   try {
     const client = makeClient(path)
     await assert.rejects(() => client.snapshot(), (err: Error) => {
-      assert.ok(err instanceof HerdrCliError)
+      assert.ok(err instanceof HerdrError)
       assert.equal(err.code, 'HERDR_ERROR')
+      assert.equal(err.serverCode, 'internal_error', 'server error code must be preserved for branching')
       assert.match(err.message, /internal_error/)
       return true
     })
@@ -131,6 +132,105 @@ test('socket: error envelope -> HERDR_ERROR with code message', async () => {
   } finally {
     server.close(); rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('socket: agentExplain maps agent_explain_unavailable to {} (CLI parity)', async () => {
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    replyErrorAndClose(conn, req, 'agent_explain_unavailable', 'no detected agent label')
+  })
+  try {
+    const client = makeClient(path)
+    const res = await client.agentExplain({ target: 'w1:p1' })
+    assert.deepEqual(res, {}, 'business failure is a value, not an error (parity with removed CLI transport)')
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('socket: waitAgent maps timeout serverCode to timeout result', async () => {
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    replyErrorAndClose(conn, req, 'timeout', 'wait timed out')
+  })
+  try {
+    const client = makeClient(path)
+    const res = await client.waitAgent({ target: 'w1:p1', until: ['done'], timeout_ms: 2000 }, new AbortController().signal)
+    assert.equal(res.kind, 'timeout')
+    if (res.kind === 'timeout') assert.ok(res.waited_ms >= 0)
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('socket: ping returns version/protocol from pong', async () => {
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    if (req.method === 'ping') replyAndClose(conn, req, { type: 'pong', version: '0.8.0', protocol: 19 })
+    else replyAndClose(conn, req, {})
+  })
+  try {
+    const client = makeClient(path)
+    const pong = await client.ping()
+    assert.deepEqual(pong, { version: '0.8.0', protocol: 19 })
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('socket: ping with malformed pong rejects HERDR_PROTOCOL', async () => {
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    replyAndClose(conn, req, { type: 'pong' })
+  })
+  try {
+    const client = makeClient(path)
+    await assert.rejects(() => client.ping(), (err: Error) => {
+      assert.ok(err instanceof HerdrError)
+      assert.equal(err.code, 'HERDR_PROTOCOL')
+      return true
+    })
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('socket: idempotent read retries once on HERDR_UNAVAILABLE (connection refused)', async () => {
+  // 第一次连接被拒（snapshot 幂等读）→ 300ms 后重试成功
+  let attempts = 0
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    attempts++
+    if (attempts === 1) {
+      conn.destroy()
+    } else {
+      replyAndClose(conn, req, SNAPSHOT)
+    }
+  })
+  try {
+    const client = makeClient(path)
+    const snap = await client.snapshot()
+    assert.equal(snap.version, '0.8.0')
+    assert.equal(attempts, 2, 'exactly one retry after the refused connection')
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('socketPing: standalone probe returns version/protocol or null', async () => {
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    if (req.method === 'ping') replyAndClose(conn, req, { type: 'pong', version: '0.8.0', protocol: 19 })
+    else replyAndClose(conn, req, {})
+  })
+  try {
+    const ok = await socketPing(path)
+    assert.deepEqual(ok, { version: '0.8.0', protocol: 19 })
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+  // 不存在 socket → null（不抛错）
+  const missing = await socketPing(join(dir, 'missing.sock'), 300)
+  assert.equal(missing, null)
 })
 
 test('socket: waitAgent maps agent_not_found to not_found', async () => {
@@ -152,7 +252,7 @@ test('socket: connection refused -> HERDR_UNAVAILABLE with diagnostics', async (
   try {
     const client = new SocketHerdrClient(new Context(), { socketPath: join(dir, 'missing.sock'), timeoutMs: 1000 })
     await assert.rejects(() => client.snapshot(), (err: Error) => {
-      assert.ok(err instanceof HerdrCliError)
+      assert.ok(err instanceof HerdrError)
       assert.equal(err.code, 'HERDR_UNAVAILABLE')
       assert.match(err.message, /socket|server/i)
       return true
@@ -198,7 +298,7 @@ test('CA-011: socket runCommand abort during polling rejects HERDR_ABORTED (not 
     await new Promise(res => setTimeout(res, 700))
     ac.abort()
     await assert.rejects(() => p, (err: Error) => {
-      assert.ok(err instanceof HerdrCliError)
+      assert.ok(err instanceof HerdrError)
       assert.equal(err.code, 'HERDR_ABORTED')
       return true
     })

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { SocketHerdrClient } from '../../src/client/socket.ts'
-import { HerdrCliError } from '../../src/client/cli.ts'
+import { HerdrError } from '../../src/client/error.ts'
 import { computeBackoffDelayMs, setupEventForwarding } from '../../src/events/forward.ts'
 
 interface Req { id: string; method: string; params: unknown }
@@ -132,39 +132,7 @@ test('forward: disabled does not subscribe', async () => {
   }
 })
 
-test('CA-004: CLI polling diff maps resource prefixes to typed kinds (no as never)', async () => {
-  // 轮询兜底路径：快照从空变为含 workspace/tab/pane → 发出 created 事件，类型必须正确映射
-  const resourceEvents: unknown[] = []
-  const ctx = new Context()
-  let calls = 0
-  const emptySnap = {
-    version: '0.8.0', protocol: 19, agents: [], layouts: [],
-    focused_pane_id: null, focused_tab_id: null, focused_workspace_id: null,
-  }
-  const fakeClient = {
-    // 非 socket client（无 subscribe）→ 走轮询路径
-    snapshot: async () => {
-      calls++
-      if (calls === 1) return { ...emptySnap, panes: [], workspaces: [], tabs: [] }
-      return {
-        ...emptySnap,
-        panes: [{ pane_id: 'w1:p1' }],
-        workspaces: [{ workspace_id: 'w1' }],
-        tabs: [{ tab_id: 'w1:t1' }],
-      }
-    },
-  }
-  ctx.provide('herdr', fakeClient)
-  ctx.on('herdr/resource-changed', (e: unknown) => resourceEvents.push(e))
-  ctx.on('herdr/channel', () => {})
-  const cleanup = setupEventForwarding(ctx, { enabled: true, maxReconnectMs: 2000, pollIntervalMs: 50 })
-  await new Promise(res => setTimeout(res, 300))
-  cleanup()
-  const created = resourceEvents.filter((e: unknown) => (e as { action?: string }).action === 'created')
-  const kinds = created.map((e: unknown) => (e as { type?: string }).type).sort()
-  assert.deepEqual(kinds, ['pane', 'tab', 'workspace'], 'prefix w/t/p map to workspace/tab/pane')
-  assert.ok(created.every((e: unknown) => (e as { id?: string }).id), 'each event carries an id')
-})
+
 
 // ---------------------------------------------------------------------------
 // CA-008：socket 订阅握手 timeout / 断开拒绝 / 指数退避 / cleanup 清理
@@ -192,7 +160,7 @@ test('CA-008: subscribe handshake timeout rejects HERDR_TIMEOUT and cleans up th
   try {
     const client = new SocketHerdrClient(new Context(), { socketPath: path, timeoutMs: 120 })
     await assert.rejects(() => client.subscribe([{ type: 'workspace.created' }]), (err: Error) => {
-      assert.ok(err instanceof HerdrCliError)
+      assert.ok(err instanceof HerdrError)
       assert.equal(err.code, 'HERDR_TIMEOUT')
       return true
     })
@@ -211,7 +179,7 @@ test('CA-008: subscribe rejects when the socket closes before the handshake resp
   try {
     const client = new SocketHerdrClient(new Context(), { socketPath: path, timeoutMs: 5000 })
     await assert.rejects(() => client.subscribe([{ type: 'workspace.created' }]), (err: Error) => {
-      assert.ok(err instanceof HerdrCliError)
+      assert.ok(err instanceof HerdrError)
       assert.equal(err.code, 'HERDR_UNAVAILABLE')
       return true
     })
@@ -231,7 +199,7 @@ test('CA-008: subscribe error envelope rejects HERDR_ERROR', async () => {
   try {
     const client = new SocketHerdrClient(new Context(), { socketPath: path, timeoutMs: 5000 })
     await assert.rejects(() => client.subscribe([{ type: 'bogus' }]), (err: Error) => {
-      assert.ok(err instanceof HerdrCliError)
+      assert.ok(err instanceof HerdrError)
       assert.equal(err.code, 'HERDR_ERROR')
       assert.match(err.message, /invalid_request/)
       return true
@@ -259,7 +227,9 @@ test('CA-008: forwarding cleanup closes the subscription socket (no lingering co
     const client = new SocketHerdrClient(ctx, { socketPath: path, timeoutMs: 3000 })
     ctx.on('herdr/channel', () => {})
     const cleanup = setupEventForwarding(ctx, { enabled: true, maxReconnectMs: 2000 })
-    await new Promise(res => setTimeout(res, 120))
+    // 订阅引导期的 snapshot 幂等读会重试一次（300ms，CA-011/§11.2 对齐 CLI retryRead）；
+    // 服务器对 snapshot 不回复时首次订阅在 ~600ms 后才建立，等待须覆盖该延迟
+    await new Promise(res => setTimeout(res, 1000))
     assert.equal(client.connected, true, 'subscribed before cleanup')
     cleanup()
     assert.equal(client.connected, false, 'cleanup must close the subscription socket')
@@ -299,7 +269,8 @@ test('CA-008: forwarding reconnects with backoff after disconnect and resumes ev
     ctx.on('herdr/resource-changed', (e: unknown) => resourceEvents.push(e))
     ctx.on('herdr/channel', () => {})
     const cleanup = setupEventForwarding(ctx, { enabled: true, maxReconnectMs: 300 })
-    await new Promise(res => setTimeout(res, 800))
+    // 订阅引导（snapshot 重试 ~600ms）+ 首次断开 + 退避重连：总预算 1.5s
+    await new Promise(res => setTimeout(res, 1500))
     cleanup()
     assert.ok(connections >= 2, `expected reconnect, saw ${connections} connections`)
     assert.ok(resourceEvents.length >= 1, 'events resume after reconnect')

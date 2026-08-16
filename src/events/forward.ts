@@ -18,8 +18,6 @@ declare module '@deepseek-ai/cordis' {
 export interface EventForwardOptions {
   enabled: boolean
   maxReconnectMs: number
-  /** CLI 传输下轮询快照的间隔（仅兜底，默认 5s）。 */
-  pollIntervalMs?: number
 }
 
 /**
@@ -95,21 +93,12 @@ function eventResourceId(data: Record<string, unknown>): string {
 
 /**
  * Herdr → DSH 事件转发（DESIGN.md §10.1）。
- * socket 传输：长连接订阅；CLI 传输：轮询 snapshot + diff（兜底）。
+ * 全量迁移后唯一路径：socket 长连接订阅（CLI 轮询兜底已随 CLI 传输移除）。
  * 返回清理函数（插件卸载或测试结束调用；插件内同时注册为 effect）。
  */
 export function setupEventForwarding(ctx: Context, opts: EventForwardOptions): () => void {
   if (!opts.enabled) return () => {}
-  const client = ctx.herdr
-
-  if (isSocketClient(client)) {
-    return setupSocketForwarding(ctx, client, opts)
-  }
-  return setupPollingForwarding(ctx, client, opts)
-}
-
-function isSocketClient(client: HerdrClient): client is SocketHerdrClient {
-  return typeof (client as SocketHerdrClient).subscribe === 'function'
+  return setupSocketForwarding(ctx, ctx.herdr as SocketHerdrClient, opts)
 }
 
 // ---------------------------------------------------------------------------
@@ -242,65 +231,4 @@ function setupSocketForwarding(ctx: Context, client: SocketHerdrClient, opts: Ev
   }
 }
 
-// ---------------------------------------------------------------------------
-// CLI 传输：轮询 snapshot + diff（兜底，不推荐）
-// ---------------------------------------------------------------------------
 
-function setupPollingForwarding(ctx: Context, client: HerdrClient, opts: EventForwardOptions): () => void {
-  const logger = createLogger(ctx, 'forward')
-  const rateLimited = createRateLimiter(5000)
-  const pollIntervalMs = opts.pollIntervalMs ?? 5000
-  let baseline: { agents: Map<string, { status: string; agent: string }>; resources: Set<string> } | null = null
-
-  return ctx.effect(() => {
-    ctx.emit('herdr/channel', 'connected')
-    logger.debug('polling event forwarding started (interval %dms)', pollIntervalMs)
-    const timer = setInterval(async () => {
-      try {
-        const snap = await client.snapshot()
-        const agents = new Map<string, { status: string; agent: string }>()
-        for (const a of snap.agents) {
-          if (a.pane_id) agents.set(a.pane_id, { status: a.status ?? 'unknown', agent: a.agent ?? '' })
-        }
-        const resources = new Set<string>()
-        for (const w of snap.workspaces) if (w.workspace_id) resources.add('w:' + w.workspace_id)
-        for (const t of snap.tabs) if (t.tab_id) resources.add('t:' + t.tab_id)
-        for (const p of snap.panes) if (p.pane_id) resources.add('p:' + p.pane_id)
-
-        if (baseline) {
-          for (const [paneId, info] of agents) {
-            const prev = baseline.agents.get(paneId)
-            if (!prev || prev.status !== info.status) {
-              ctx.emit('herdr/agent-state', { pane_id: paneId, agent: info.agent, status: info.status })
-            }
-          }
-          // CA-004：kind 映射显式化（替代 as never）；未知前缀静默跳过
-          for (const r of resources) {
-            if (!baseline.resources.has(r)) {
-              const kind = RESOURCE_KIND_BY_PREFIX[r.split(':')[0]]
-              if (kind) ctx.emit('herdr/resource-changed', { type: kind, action: 'created', id: r.split(':')[1] })
-            }
-          }
-          for (const r of baseline.resources) {
-            if (!resources.has(r)) {
-              const kind = RESOURCE_KIND_BY_PREFIX[r.split(':')[0]]
-              if (kind) ctx.emit('herdr/resource-changed', { type: kind, action: 'closed', id: r.split(':')[1] })
-            }
-          }
-        }
-        baseline = { agents, resources }
-      } catch (err) {
-        // CA-017：轮询快照失败不再静默吞——限流告警（连接级故障可见）
-        rateLimited('poll-snapshot', () => logger.warn('polling snapshot failed: %s', errText(err)))
-      }
-    }, pollIntervalMs)
-    return () => clearInterval(timer)
-  })
-}
-
-/** CA-004：轮询 diff 的资源前缀 → 领域类型映射（替代 as never）。 */
-const RESOURCE_KIND_BY_PREFIX: Record<string, 'workspace' | 'tab' | 'pane'> = {
-  w: 'workspace',
-  t: 'tab',
-  p: 'pane',
-}

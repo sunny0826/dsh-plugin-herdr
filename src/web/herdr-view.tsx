@@ -187,7 +187,6 @@ export function HerdrView() {
   const paneCount = snap?.topology?.panes.length ?? snap?.agents.length ?? 0
   const wsCount = visibleGroups.length ?? 0
   const agentCount = snap?.agents.length ?? 0
-  const cli = snap?.cli
   const filter = snap?.filter
 
   const toggleWs = (id: string) => {
@@ -459,16 +458,13 @@ export function HerdrView() {
         </div>
       ) : null}
 
-      {snap && cli && !cli.available ? (
+      {snap && !snap.connected ? (
         <div className="herdr-install">
-          <div className="herdr-install-title">herdr CLI is not installed</div>
-          The Herdr panel needs the <code>herdr</code> binary to inspect and control panes. Install it:
+          <div className="herdr-install-title">herdr server is not reachable</div>
+          The panel talks to the herdr headless server over its socket. Start it (or use the start
+          button in the banner), then refresh. Install herdr:
           <br />
           <code>curl -fsSL https://herdr.dev/install.sh | sh</code>
-          <br />
-          Windows: <code>powershell -ExecutionPolicy Bypass -c &quot;irm https://herdr.dev/install.ps1 | iex&quot;</code>
-          <br />
-          Homebrew / mise / Nix and verification: <a href="https://herdr.dev/docs/install/" target="_blank" rel="noreferrer">herdr.dev/docs/install</a>
         </div>
       ) : null}
 

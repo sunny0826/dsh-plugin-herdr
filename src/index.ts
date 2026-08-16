@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { Config, type Config as ConfigType, resolveCliPath } from './config.ts'
+import { Config, type Config as ConfigType, resolveSession, resolveSocketPath } from './config.ts'
 import { guardLocalRequest, requireMethod } from './http-guard.ts'
 import { createLogger } from './log.ts'
 import { setupEventForwarding } from './events/forward.ts'
@@ -72,9 +72,8 @@ export function apply(ctx: Context, config: ConfigType) {
   registerPaneSendKeys(ctx)
   registerPaneRead(ctx)
   registerPaneLayout(ctx)
-  // layout.apply 只有 socket 传输有实现（herdr layout CLI 不存在）；CLI 下不注册，
-  // 避免模型调用后收到"requires the socket transport"错误（session log 实测）
-  if (config.transport !== 'cli') registerLayoutApply(ctx)
+  // layout.apply 为 socket 协议原生方法（全量迁移后恒注册）
+  registerLayoutApply(ctx)
   registerAgentPrompt(ctx)
   registerAgentExplain(ctx)
   registerAgentSendKeys(ctx)
@@ -86,13 +85,11 @@ export function apply(ctx: Context, config: ConfigType) {
   registerWorkspaceRename(ctx)
   registerPaneRename(ctx)
 
-  // M5 状态面板：跟踪器（agent 状态 + 输出缓冲 + 安装检查）+ HTTP 端点
-  const cliPath = resolveCliPath(config)
-  const tracker = new HerdrStatusTracker(ctx, ctx.herdr, cliPath, { pollIntervalMs: 2000 })
-  void tracker.probeCli().then(info => {
-    if (!info.available) {
-      createLogger(ctx, 'index').warn("herdr CLI not found at '%s'. Install: curl -fsSL https://herdr.dev/install.sh | sh", info.path)
-    }
+  // M5 状态面板：跟踪器（agent 状态 + 输出缓冲 + server ping）+ HTTP 端点
+  const tracker = new HerdrStatusTracker(ctx, ctx.herdr, {
+    pollIntervalMs: 2000,
+    socketPath: resolveSocketPath(config) ?? null,
+    session: resolveSession(config) ?? null,
   })
   const offAgentState = ctx.on('herdr/agent-state', (info: { pane_id: string; agent: string; status: string; message?: string }) =>
     tracker.onAgentState(info))
@@ -159,7 +156,8 @@ export function apply(ctx: Context, config: ConfigType) {
         res.end(JSON.stringify({ pane_id: paneId }))
       },
     })
-    // M7 启动看板：POST /herdr-start（headless server 未运行时由看板按钮调用）
+    // M7 启动看板：POST /herdr-start（headless server 未运行时由看板按钮调用；
+    // D1：全插件唯一的 CLI spawn 引导例外——socket 无法启动自身）
     offStartRoute = webServer.register({
       kind: 'exact',
       path: '/herdr-start',
@@ -167,7 +165,12 @@ export function apply(ctx: Context, config: ConfigType) {
         if (!guard(res, req, 'POST')) return
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         try {
-          const server = await startHerdrServer(cliPath)
+          const socketPath = resolveSocketPath(config)
+          if (!socketPath) {
+            res.end(JSON.stringify({ ok: false, error: 'herdr socket path unresolvable (POSIX only; Windows is not supported)' }))
+            return
+          }
+          const server = await startHerdrServer(socketPath, { session: resolveSession(config) ?? null })
           res.end(JSON.stringify({ ok: server.running, server }))
         } catch (e) {
           res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
@@ -309,8 +312,8 @@ export function apply(ctx: Context, config: ConfigType) {
 
   ctx.effect(() => {
     createLogger(ctx, 'index').info(
-      'plugin loaded! transport=%s timeoutMs=%d allowBackground=%s events=%s',
-      config.transport, config.timeoutMs, config.allowBackground, config.events.enabled,
+      'plugin loaded! transport=socket timeoutMs=%d allowBackground=%s events=%s',
+      config.timeoutMs, config.allowBackground, config.events.enabled,
     )
     return () => createLogger(ctx, 'index').debug('plugin disposed')
   })

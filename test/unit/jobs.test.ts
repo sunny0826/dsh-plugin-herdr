@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { startWaitJob, type WaitJobSpec } from '../../src/jobs.ts'
-import { HerdrCliError } from '../../src/client/cli.ts'
+import { HerdrError } from '../../src/client/error.ts'
 import { registerPaneRun } from '../../src/tools/pane-run.ts'
 import { registerAgentWait } from '../../src/tools/agent-wait.ts'
 import type { JobHooks } from '@deepseek-ai/dsh-jobs'
@@ -153,7 +153,7 @@ test('CA-015: pane_run background job — cancel settles killed (integration)', 
       await new Promise<void>((_resolve, reject) => {
         signal.addEventListener('abort', () => {
           sawAbort = true
-          reject(new HerdrCliError('HERDR_ABORTED', 'runCommand aborted'))
+          reject(new HerdrError('HERDR_ABORTED', 'runCommand aborted'))
         })
       })
       return { kind: 'completed' as const, pane_id: 'w1:p1', exit_code: 0, output: '', truncated: false }
@@ -178,7 +178,7 @@ test('CA-015: agent_wait background job — cancel settles killed (integration)'
       await new Promise<void>((_resolve, reject) => {
         signal.addEventListener('abort', () => {
           sawAbort = true
-          reject(new HerdrCliError('HERDR_ABORTED', 'waitAgent aborted'))
+          reject(new HerdrError('HERDR_ABORTED', 'waitAgent aborted'))
         })
       })
       return { kind: 'completed' as const, status: 'done' as const, waited_ms: 5 }
