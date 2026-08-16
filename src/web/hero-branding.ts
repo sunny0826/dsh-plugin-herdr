@@ -21,6 +21,18 @@ export const HERDR_HERO_TEXT_BRAND_EN = 'Herdr helps you'
 /** 英文原样式段（前缀空格：两段由独立伪元素渲染，拼接需显式空格；中文无此问题）。 */
 export const HERDR_HERO_TEXT_PLAIN_EN = ' explore the unknown'
 
+/** herdr preset 显示名（preset.yml 的 name 是单字符串、DSH 无自定义 preset i18n；
+ *  hero 页 preset 芯片在英文界面由本模块 DOM 替换为英文，其余 surface 保持原样）。 */
+export const HERDR_PRESET_NAME_ZH = 'Herdr 模式'
+export const HERDR_PRESET_NAME_EN = 'Herdr mode'
+
+/** herdr preset 介绍（description；同 name 的单字符串限制，全局文本替换补偿，
+ *  覆盖 hero 页 preset 菜单与设置页的 description 展示）。 */
+export const HERDR_PRESET_DESC_ZH =
+  '会话绑定 Herdr——本对话视为运行在 Herdr 中的 Agent，状态实时显示在 Herdr 侧边栏，优先使用 herdr 工具操作 workspace / pane / agent。'
+export const HERDR_PRESET_DESC_EN =
+  'Binds the session to Herdr: the conversation runs as an Agent inside Herdr, its status shows live in the Herdr sidebar, and herdr tools operate workspace / pane / agent.'
+
 /** 品牌紫 token（styles.ts CSS 变量引用；取值 = herdr.dev 官网 site.css 的 --spot 实测，design §4.1）。 */
 export const HERDR_BRAND_LIGHT = '#8839ef' // herdr.dev paper 模式
 export const HERDR_BRAND_DARK = '#cba6f7' // herdr.dev ink 模式
@@ -33,23 +45,74 @@ const TEXT_CLASS = 'herdr-hero-text'
 const HEADLINE_CLASS = 'herdr-hero-headline'
 const LANG_ATTR = 'data-herdr-lang'
 
-/** 当前界面语言（locale 服务 active，经 setHerdrLang 同步；默认 zh）。 */
-let herdrLang = 'zh'
+// 语言状态单一事实源在 i18n.ts（locale 服务 active）；本模块读取并镜像到打标元素。
+import { getHerdrLang, setHerdrLang as setI18nLang } from './i18n.ts'
 
 /** 当前语言的完整文案（aria-label 用）。 */
 function heroTextForLang(): string {
-  return herdrLang === 'en' ? HERDR_HERO_TEXT_EN : HERDR_HERO_TEXT
+  return getHerdrLang() === 'en' ? HERDR_HERO_TEXT_EN : HERDR_HERO_TEXT
 }
 
 /** 同步界面语言（app.tsx 订阅 locale 服务调用）；已标记元素立即刷新。 */
 export function setHerdrLang(lang: string): void {
-  herdrLang = lang === 'en' ? 'en' : 'zh'
+  setI18nLang(lang)
   if (typeof document === 'undefined') return
+  const active = getHerdrLang()
   for (const el of Array.from(document.querySelectorAll('.' + TEXT_CLASS))) {
-    el.setAttribute(LANG_ATTR, herdrLang)
+    el.setAttribute(LANG_ATTR, active)
   }
   for (const el of Array.from(document.querySelectorAll('.' + HEADLINE_CLASS))) {
     el.setAttribute('aria-label', heroTextForLang())
+  }
+  patchPresetChip()
+  patchPresetDesc()
+}
+
+/** hero 页 preset 芯片英文适配：仅当芯片显示 herdr preset 名时替换文本节点
+ *  （内置 preset 由 shell locale 自动翻译，不匹配不处理）；文本替换可逆，
+ *  React 重渲染重建后由 observer 重新应用。 */
+function patchPresetChip(): void {
+  for (const root of Array.from(document.querySelectorAll('[data-phase="hero"]'))) {
+    for (const btn of Array.from(root.querySelectorAll('button'))) {
+      const text = (btn.textContent ?? '').trim()
+      for (const node of Array.from(btn.childNodes)) {
+        if (node.nodeType !== Node.TEXT_NODE || node.textContent === null) continue
+        if (getHerdrLang() === 'en' && node.textContent.includes(HERDR_PRESET_NAME_ZH)) {
+          node.textContent = node.textContent.replace(HERDR_PRESET_NAME_ZH, HERDR_PRESET_NAME_EN)
+        } else if (getHerdrLang() !== 'en' && node.textContent.includes(HERDR_PRESET_NAME_EN)) {
+          node.textContent = node.textContent.replace(HERDR_PRESET_NAME_EN, HERDR_PRESET_NAME_ZH)
+        }
+      }
+    }
+  }
+}
+
+/** preset 文案（name + description）英文适配：全局文本节点替换（TreeWalker），
+ *  覆盖 hero 页 preset 菜单（portal 渲染、不在 hero 根内）与设置页的展示；
+ *  替换可逆，React 重建后由 observer 补标。 */
+function patchPresetDesc(): void {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+  const targets: Text[] = []
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text
+    const text = node.textContent ?? ''
+    const en = getHerdrLang() === 'en'
+    if (en
+      ? text.includes(HERDR_PRESET_DESC_ZH) || text.includes(HERDR_PRESET_NAME_ZH)
+      : text.includes(HERDR_PRESET_DESC_EN) || text.includes(HERDR_PRESET_NAME_EN)) {
+      targets.push(node)
+    }
+  }
+  for (const node of targets) {
+    let text = node.textContent ?? ''
+    if (getHerdrLang() === 'en') {
+      text = text.replace(HERDR_PRESET_DESC_ZH, HERDR_PRESET_DESC_EN)
+        .replace(HERDR_PRESET_NAME_ZH, HERDR_PRESET_NAME_EN)
+    } else {
+      text = text.replace(HERDR_PRESET_DESC_EN, HERDR_PRESET_DESC_ZH)
+        .replace(HERDR_PRESET_NAME_EN, HERDR_PRESET_NAME_ZH)
+    }
+    node.textContent = text
   }
 }
 
@@ -72,7 +135,7 @@ function patchHero(): void {
     if (!(fishSeat instanceof HTMLElement) || !(headline instanceof HTMLElement)) continue
     fishSeat.classList.add(FISH_CLASS)
     headline.classList.add(HEADLINE_CLASS)
-    headline.setAttribute(LANG_ATTR, herdrLang)
+    headline.setAttribute(LANG_ATTR, getHerdrLang())
     if (!headline.getAttribute('aria-label')) headline.setAttribute('aria-label', heroTextForLang())
     // 标题文本 span：fish 座位的下一个兄弟（DOM 顺序固定：fish 座位、标题文本、预览徽章）；
     // 回退：共同父容器内第一个「含直接文本节点且无 svg 后代」的元素
@@ -82,7 +145,7 @@ function patchHero(): void {
     }
     if (textEl instanceof HTMLElement) {
       textEl.classList.add(TEXT_CLASS)
-      textEl.setAttribute(LANG_ATTR, herdrLang)
+      textEl.setAttribute(LANG_ATTR, getHerdrLang())
     }
   }
 }
@@ -93,12 +156,16 @@ export function startHeroBranding(): () => void {
     return () => {}
   }
   patchHero()
+  patchPresetChip()
+  patchPresetDesc()
   let raf = 0
   const observer = new MutationObserver(() => {
     if (raf) return
     raf = requestAnimationFrame(() => {
       raf = 0
       patchHero()
+      patchPresetChip()
+      patchPresetDesc()
     })
   })
   observer.observe(document.body, {
@@ -106,6 +173,7 @@ export function startHeroBranding(): () => void {
     subtree: true,
     attributes: true,
     attributeFilter: ['class'],
+    characterData: true, // 芯片文本替换属于 characterData 变更；React 重建走 childList
   })
   return () => {
     observer.disconnect()

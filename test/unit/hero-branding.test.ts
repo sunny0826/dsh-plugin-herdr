@@ -14,6 +14,10 @@ import {
   HERDR_HERO_TEXT_EN,
   HERDR_HERO_TEXT_PLAIN,
   HERDR_HERO_TEXT_PLAIN_EN,
+  HERDR_PRESET_DESC_EN,
+  HERDR_PRESET_DESC_ZH,
+  HERDR_PRESET_NAME_EN,
+  HERDR_PRESET_NAME_ZH,
 } from '../../src/web/hero-branding.ts'
 
 test('hero branding: 文案常量与需求原文一致（漂移哨兵）', () => {
@@ -33,6 +37,23 @@ test('hero branding: 英文文案常量一致（英文界面适配，§4.6）', 
   assert.equal(HERDR_HERO_TEXT_PLAIN_EN, ' explore the unknown')
   // 英文分段拼接 == 全文（品牌段 + 带空格的原样式段，直接拼接）
   assert.equal(HERDR_HERO_TEXT_BRAND_EN + HERDR_HERO_TEXT_PLAIN_EN, HERDR_HERO_TEXT_EN)
+})
+
+test('hero branding: herdr preset 显示名中英常量（§4.6，preset.yml 无 i18n 的 UI 补偿）', () => {
+  assert.equal(HERDR_PRESET_NAME_ZH, 'Herdr 模式')
+  assert.equal(HERDR_PRESET_NAME_EN, 'Herdr mode')
+  assert.notEqual(HERDR_PRESET_NAME_ZH, HERDR_PRESET_NAME_EN)
+})
+
+test('hero branding: herdr preset 介绍中英常量（description 同受单字符串限制）', () => {
+  assert.equal(
+    HERDR_PRESET_DESC_ZH,
+    '会话绑定 Herdr——本对话视为运行在 Herdr 中的 Agent，状态实时显示在 Herdr 侧边栏，优先使用 herdr 工具操作 workspace / pane / agent。',
+  )
+  assert.ok(HERDR_PRESET_DESC_EN.startsWith('Binds the session to Herdr'))
+  assert.ok(HERDR_PRESET_DESC_EN.length > 60)
+  // 中英互不相同
+  assert.notEqual(HERDR_PRESET_DESC_ZH, HERDR_PRESET_DESC_EN)
 })
 
 test('hero branding: 品牌紫 token 随主题（design §4.1，herdr.dev 官网 --spot 实测）', () => {

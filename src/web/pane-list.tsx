@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import { dotState, filterGroupsToSession, shouldAutoExpand, toggleCollapse } from '../client-logic.ts'
+import { t, useHerdrLang } from './i18n.ts'
 import { useFloatingDrag, SNAP } from './floating-drag.ts'
 import { HERDR_LOGO_PATH_D } from './logo-path.ts'
 import { useHerdrMode } from './mode.ts'
@@ -36,6 +37,8 @@ export function HerdrLogo({ className }: { className?: string }) {
 }
 
 export function HerdrPaneList() {
+  // 语言订阅：切语言时面板文案跟随
+  void useHerdrLang()
   const herdrMode = useHerdrMode()
   const { snap, error } = useHerdrStatus()
   const [collapsed, setCollapsed] = useState(false)
@@ -204,7 +207,7 @@ export function HerdrPaneList() {
         <span className="pane-list-meta">{wsCount} ws · {paneCount} panes</span>
         <button
           className="pane-list-logo"
-          title="折叠为 logo"
+          title={t('panel.collapseToLogo')}
           onPointerDown={e => e.stopPropagation()}
           onClick={e => {
             e.stopPropagation()
@@ -218,7 +221,7 @@ export function HerdrPaneList() {
       <div className="pane-list-body">
         {groups.length === 0 ? (
           <div className="herdr-empty">
-            {selfPaneId || paneMisses >= 3 ? '本会话暂无 pane' : '正在获取本会话 pane…'}
+            {selfPaneId || paneMisses >= 3 ? t('panel.noPane') : t('panel.fetchingPane')}
           </div>
         ) : groups.map(g => (
           <div key={g.workspace.workspace_id} className="pl-group" data-collapsed={collapsedWs.has(g.workspace.workspace_id) || undefined}>
@@ -240,16 +243,16 @@ export function HerdrPaneList() {
                     className="pl-row"
                     data-self={isSelf || undefined}
                     data-pane-id={pane.pane_id}
-                    title={isSelf ? `${pane.pane_id}（本对话）· 点击在 Herdr 中定位` : `${pane.pane_id} · 点击在 Herdr 中定位`}
+                    title={isSelf ? t('panel.selfTitle', { id: pane.pane_id }) : t('panel.paneTitle', { id: pane.pane_id })}
                     onPointerDown={e => e.stopPropagation()}
                     onClick={() => focusPaneInHerdrTab(pane.pane_id)}
                   >
                     <StateDot state={dotState(status)} className={muted ? 'herdr-dot-muted' : undefined} />
                     <span className="pl-paneid">{pane.pane_id}</span>
                     <span className="pl-agent">{agent?.agent ?? '—'}</span>
-                    {isSelf ? <span className="pl-self-tag">本对话</span> : null}
+                    {isSelf ? <span className="pl-self-tag">{t('panel.selfTag')}</span> : null}
                     <span className="pl-state" data-state={agent ? dotState(status) : undefined}>
-                      {status ?? '纯终端'}
+                      {status ?? t('panel.plainTerminal')}
                     </span>
                   </div>
                 )

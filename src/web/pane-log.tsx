@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useRef } from 'react'
 import { classifyLogLine, type AgentAccent } from '../client-logic.ts'
+import { t, useHerdrLang } from './i18n.ts'
 import type { HerdrAgentStatus } from './types.ts'
 
 /** 清洗 ANSI 转义序列（与 pane-read 的 strip 语义一致）；纯函数供单测。 */
@@ -44,6 +45,8 @@ export function PaneLog({
   accent?: AgentAccent
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  // 语言订阅：切语言时空态文案跟随
+  void useHerdrLang()
   // 用户是否停留在底部（上滚暂停跟随，回底恢复）
   const atBottomRef = useRef(true)
 
@@ -96,7 +99,7 @@ export function PaneLog({
     >
       {agent?.status === 'working' && !empty ? <span className="herdr-log-live" title="agent working" /> : null}
       {empty ? (
-        <div className="herdr-pcard-log-empty">（无输出）</div>
+        <div className="herdr-pcard-log-empty">{t('pane.noOutput')}</div>
       ) : open ? (
         <div className="herdr-pcard-log-body">{renderLines(lines)}</div>
       ) : (
