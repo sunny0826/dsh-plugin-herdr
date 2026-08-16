@@ -3,6 +3,14 @@
 // 通过 STYLE_ID 检查避免重复（原样保留）。
 
 import { herdrLogoMaskUrl } from './logo-path.ts'
+import {
+  HERDR_BRAND_DARK,
+  HERDR_BRAND_GLOW_DARK,
+  HERDR_BRAND_GLOW_LIGHT,
+  HERDR_BRAND_LIGHT,
+  HERDR_HERO_TEXT_BRAND,
+  HERDR_HERO_TEXT_PLAIN,
+} from './hero-branding.ts'
 
 const STYLE_ID = 'dsh-plugin-herdr-styles'
 
@@ -588,6 +596,70 @@ html:not([data-herdr-mode='1']) .herdr-tab { display: none; }
   background: currentColor;
   -webkit-mask: var(--herdr-logo-mask) center / contain no-repeat;
   mask: var(--herdr-logo-mask) center / contain no-repeat;
+}
+
+/* ── herdr 模式新会话品牌化（design: herdr-hero-branding）───────────────────
+ * 门控：html[data-herdr-mode='1']（mode.ts 镜像，hero 相位同样适用）+
+ *       [data-phase='hero']（shell ConversationRoot 的相位属性）；
+ * 标记类由 src/web/hero-branding.ts 打上（fish 座位 / 标题文本 span / 标题容器）。
+ * 品牌紫：herdr.dev 官网两套主题的 --spot（paper #8839ef / ink #cba6f7），
+ * 随 DSH 深色主题标记 body[data-ds-dark-theme]（ui-theme 宿主写入）切换。
+ * logo 居中适配：herdr path 在 512 画布内实际分布偏右 +10.18%、偏下 +13.58%
+ * （getBBox 实测，设计文档 §4.3.3）——fish 占满 34×25 画布天然居中；
+ * 以 transform 平移把图形重心拉回座位中心（百分比相对 ::before 自身 30×30）。 */
+:root {
+  --herdr-brand: ${HERDR_BRAND_LIGHT};
+  --herdr-brand-glow: ${HERDR_BRAND_GLOW_LIGHT};
+}
+body[data-ds-dark-theme] {
+  --herdr-brand: ${HERDR_BRAND_DARK};
+  --herdr-brand-glow: ${HERDR_BRAND_GLOW_DARK};
+}
+
+/* 需求 1：新会话输入卡紫色边框（data-composer-card 为稳定属性，无需打标；
+   保持 1px 不跳布局，叠加外圈与柔和辉光，辉光为视觉验收项可移除） */
+html[data-herdr-mode='1'] [data-phase='hero'] [data-composer-card] {
+  border-color: var(--herdr-brand);
+  box-shadow:
+    var(--dsw-shadow-lv2, 0 4px 16px rgba(0, 0, 0, 0.08)),
+    0 0 0 1px var(--herdr-brand),
+    0 0 28px var(--herdr-brand-glow);
+}
+
+/* 需求 2a：鱼 logo → herdr logo（mask 渲染 + 居中平移修正） */
+html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-fish svg { display: none; }
+html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-fish::before {
+  content: '';
+  display: block;
+  width: 30px;
+  height: 30px;
+  background: var(--herdr-brand);
+  -webkit-mask: var(--herdr-logo-mask) center / contain no-repeat;
+  mask: var(--herdr-logo-mask) center / contain no-repeat;
+  /* 水平：图形在 512 画布内偏右 +10.18% → 平移回列中心；
+     垂直：图形偏下 +13.58% → 平移回行中心，再额外上移 2px（-6.67%）
+     对齐 fish 的视觉位置（用户反馈 logo 偏下，视觉验收值；如需微调改此处） */
+  transform: translate(-10.18%, -20.25%);
+}
+
+/* 需求 2b：标题分段替换（文案常量来自 hero-branding.ts，修改需同步该文件）：
+   ::before = 「Herdr 助你」品牌特效；::after = 「探索未知之境」原字体原色
+   （color / font-weight 继承自 headline，仅显式恢复 font-size） */
+html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text { font-size: 0; }
+html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text::before {
+  content: '${HERDR_HERO_TEXT_BRAND}';
+  font-size: 26px;
+  line-height: 32px;
+  font-weight: 500;
+  color: var(--herdr-brand);
+  text-shadow: 0 0 18px var(--herdr-brand-glow);
+  white-space: nowrap;
+}
+html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text::after {
+  content: '${HERDR_HERO_TEXT_PLAIN}';
+  font-size: 26px;
+  line-height: 32px;
+  white-space: nowrap;
 }
 
 `
