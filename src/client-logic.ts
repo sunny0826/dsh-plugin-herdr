@@ -98,6 +98,113 @@ export function computeSnapPosition(i: SnapInput): { x: number; y: number } {
 }
 
 // ---------------------------------------------------------------------------
+// 拖拽排序 / localStorage 持久化（纯函数，SSR 防御）
+// ---------------------------------------------------------------------------
+
+/** localStorage 键：herdr:pane-order:<workspace_id>。 */
+export function paneOrderKey(workspaceId: string): string {
+  return 'herdr:pane-order:' + workspaceId
+}
+
+/** 可注入的存储（节点测试用 mock；默认浏览器 localStorage）。 */
+export interface PaneOrderStorageLike {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+}
+
+/** 默认存储：非浏览器环境（SSR/测试）无 localStorage 时返回 null。 */
+function defaultPaneOrderStorage(): PaneOrderStorageLike | null {
+  if (typeof localStorage === 'undefined') return null
+  return localStorage
+}
+
+/**
+ * 拖拽排序：把 ids[from] 移到结果数组下标 to（落位后索引），不修改原数组。
+ * 语义：先从 from 移除，再 splice(to, 0, item)——移动项最终精确落在下标 to。
+ * 边界：from 越界 / to 越界 / from===to → 返回原数组的拷贝（稳定不变）。
+ * @example reorderPanes(['a','b','c','d'], 1, 2) // from=1('b') → ['a','c','b','d']
+ */
+export function reorderPanes(ids: string[], from: number, to: number): string[] {
+  const n = ids.length
+  if (from === to) return ids.slice()
+  if (from < 0 || from >= n || to < 0 || to >= n) return ids.slice()
+  const next = ids.slice()
+  const [item] = next.splice(from, 1)
+  next.splice(to, 0, item)
+  return next
+}
+
+/**
+ * 按 order 排列 panes；未知 id 追加尾部（保持原相对顺序）；
+ * order 为空/无效时返回原数组。
+ */
+export function applyPaneOrder<T extends { pane_id: string }>(
+  panes: T[],
+  order: string[] | null | undefined,
+): T[] {
+  if (!order || order.length === 0) return panes
+  const byId = new Map<string, T>(panes.map(p => [p.pane_id, p]))
+  const used = new Set<string>()
+  const result: T[] = []
+  for (const id of order) {
+    if (used.has(id)) continue
+    used.add(id)
+    const p = byId.get(id)
+    if (p) result.push(p)
+  }
+  for (const p of panes) {
+    if (!used.has(p.pane_id)) result.push(p)
+  }
+  return result
+}
+
+/** 读取持久化解序的 pane_id 数组；无/损坏/空 → null。 */
+export function loadPaneOrder(
+  workspaceId: string,
+  storage?: PaneOrderStorageLike | null,
+): string[] | null {
+  const s = storage === undefined ? defaultPaneOrderStorage() : storage
+  if (!s) return null
+  try {
+    const raw = s.getItem(paneOrderKey(workspaceId))
+    if (!raw) return null
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return null
+    const ids = parsed.filter((x): x is string => typeof x === 'string')
+    return ids.length ? ids : null
+  } catch {
+    return null
+  }
+}
+
+/** 持久化解序（每次 drop 后重写）；localStorage 不可用则静默。 */
+export function savePaneOrder(
+  workspaceId: string,
+  order: string[],
+  storage?: PaneOrderStorageLike | null,
+): void {
+  const s = storage === undefined ? defaultPaneOrderStorage() : storage
+  if (!s) return
+  try {
+    s.setItem(paneOrderKey(workspaceId), JSON.stringify(order))
+  } catch {
+    // localStorage 被禁用/拒绝 → 静默（仅本次不持久化，UI 不受影响）
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 名称校验（T12）；label 非空时 ≤64，超出抛错由 UI 捕获展示
+// ---------------------------------------------------------------------------
+
+/** label 校验：去空白后为空 → null（表示清除名称）；>64 → 抛 Error；否则返回 trim 后字符串。 */
+export function validateLabel(label: string): string | null {
+  const trimmed = label.trim()
+  if (trimmed === '') return null
+  if (trimmed.length > 64) throw new Error('label must be at most 64 characters')
+  return trimmed
+}
+
+// ---------------------------------------------------------------------------
 // 折叠 / 自动展开（纯函数）
 // ---------------------------------------------------------------------------
 
@@ -229,4 +336,39 @@ export function createStatusStore<T>(opts: StatusPollOptions<T>): StatusStore<T>
     getError: () => error,
     inflight: () => (polling ? 1 : 0),
   }
+}
+
+// ---------------------------------------------------------------------------
+// Agent 主题与日志行分类（design-v2 §5.2 补充）：按 agent 类型适配日志渲染。
+// classifyLogLine 识别日志行语义（diff 增删 / markdown 标题 / 命令提示符 /
+// 代码围栏），PaneLog 据此着色；agentTheme 提供 agent 品牌强调色。
+// ---------------------------------------------------------------------------
+
+/** 日志行语义分类（PaneLog 行级着色用）。 */
+export type LogLineKind = 'diff-add' | 'diff-del' | 'heading' | 'cmd' | 'code-fence' | 'plain'
+
+/** 识别日志行语义；纯函数。 */
+export function classifyLogLine(line: string): LogLineKind {
+  const t = line.trimStart()
+  if (t.startsWith('❯') || t.startsWith('$')) return 'cmd'
+  if (t.startsWith('```') || t.startsWith('~~~')) return 'code-fence'
+  if (t.startsWith('#')) return 'heading'
+  // diff 行：+/- 开头（排除 +++/--- 文件头）；或行号前缀（如 "  110 +" / "  112 +14"，
+  // 行号后须有空白，避免把 "2024-01-01" 之类日期误判）
+  if (/^\+[^+\s]/.test(t) || /^\+\s/.test(t) || /^\s*\d+\s+\+/.test(t)) return 'diff-add'
+  if (/^-[^-\s]/.test(t) || /^-\s/.test(t) || /^\s*\d+\s+-/.test(t)) return 'diff-del'
+  return 'plain'
+}
+
+/** Agent 品牌主题（卡片徽章 / 日志强调色）。 */
+export type AgentAccent = 'codex' | 'pi' | 'claude' | 'dsh' | 'other'
+
+/** 按 agent 名识别品牌（小写前缀匹配）；未知归 other。 */
+export function agentTheme(agentName: string | undefined): AgentAccent {
+  const n = (agentName ?? '').toLowerCase()
+  if (n.startsWith('codex')) return 'codex'
+  if (n.startsWith('pi-coding') || n.startsWith('pi')) return 'pi'
+  if (n.startsWith('claude')) return 'claude'
+  if (n.startsWith('dsh')) return 'dsh'
+  return 'other'
 }

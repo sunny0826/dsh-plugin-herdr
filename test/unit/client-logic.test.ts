@@ -2,7 +2,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  agentTheme,
+  applyPaneOrder,
   buildGroups,
+  classifyLogLine,
   comparePaneId,
   compareWorkspaceId,
   computeSnapPosition,
@@ -10,10 +13,16 @@ import {
   dotState,
   formatTime,
   isDragMovement,
+  loadPaneOrder,
   parseStartResponse,
+  paneOrderKey,
+  reorderPanes,
+  savePaneOrder,
   shouldAutoExpand,
   toggleCollapse,
+  validateLabel,
 } from '../../src/client-logic.ts'
+import type { PaneOrderStorageLike } from '../../src/client-logic.ts'
 import type { HerdrTopology } from '../../src/status.ts'
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -202,4 +211,166 @@ test('CA-016: errors surface via getError, cleared on success', async () => {
   assert.equal(store.getError(), null)
   unsub()
   store.stop()
+})
+
+// ---------------------------------------------------------------------------
+// 拖拽排序 / 持久化（T10）
+// ---------------------------------------------------------------------------
+
+test('CA-016: reorderPanes moves item to target index (落位后索引), immutable', () => {
+  const ids = ['a', 'b', 'c', 'd']
+  // 向前移（from < to）：'b'(1) → 落位 2 → ['a','c','b','d']
+  assert.deepEqual(reorderPanes(ids, 1, 2), ['a', 'c', 'b', 'd'])
+  // 向后移（from > to）：'d'(3) → 落位 1 → ['a','d','b','c']
+  assert.deepEqual(reorderPanes(ids, 3, 1), ['a', 'd', 'b', 'c'])
+  // 移到开头
+  assert.deepEqual(reorderPanes(ids, 2, 0), ['c', 'a', 'b', 'd'])
+  // 移到末尾
+  assert.deepEqual(reorderPanes(ids, 0, 3), ['b', 'c', 'd', 'a'])
+  // 不修改原数组
+  assert.deepEqual(ids, ['a', 'b', 'c', 'd'])
+})
+
+test('CA-016: reorderPanes 边界（越界 / 相同）稳定返回拷贝', () => {
+  const ids = ['a', 'b', 'c']
+  // from === to → 原样
+  assert.deepEqual(reorderPanes(ids, 1, 1), ['a', 'b', 'c'])
+  // from 越界
+  assert.deepEqual(reorderPanes(ids, -1, 1), ['a', 'b', 'c'])
+  assert.deepEqual(reorderPanes(ids, 5, 1), ['a', 'b', 'c'])
+  // to 越界
+  assert.deepEqual(reorderPanes(ids, 0, -1), ['a', 'b', 'c'])
+  assert.deepEqual(reorderPanes(ids, 0, 9), ['a', 'b', 'c'])
+  // 空数组
+  assert.deepEqual(reorderPanes([], 0, 0), [])
+})
+
+test('CA-016: applyPaneOrder 按 order 排列，未知 id 追加尾部，空值返回原数组', () => {
+  const panes = [
+    { pane_id: 'a' }, { pane_id: 'b' }, { pane_id: 'c' }, { pane_id: 'd' },
+  ]
+  // 部分覆盖：未知 d 追加尾部
+  assert.deepEqual(
+    applyPaneOrder(panes, ['c', 'a']),
+    [{ pane_id: 'c' }, { pane_id: 'a' }, { pane_id: 'b' }, { pane_id: 'd' }],
+  )
+  // 全量覆盖
+  assert.deepEqual(
+    applyPaneOrder(panes, ['d', 'b', 'a', 'c']).map(p => p.pane_id),
+    ['d', 'b', 'a', 'c'],
+  )
+  // order 为空 / 无效 → 返回原数组引用
+  assert.equal(applyPaneOrder(panes, []), panes)
+  assert.equal(applyPaneOrder(panes, null), panes)
+  assert.equal(applyPaneOrder(panes, undefined), panes)
+  // 重复 id 去重且不重复输出
+  assert.deepEqual(applyPaneOrder(panes, ['b', 'b', 'a']).map(p => p.pane_id), ['b', 'a', 'c', 'd'])
+  // 空 panes
+  assert.deepEqual(applyPaneOrder([], ['x']), [])
+})
+
+test('CA-016: load/savePaneOrder 通过可注入 storage 读写（含损坏/空防御）', () => {
+  const store = new Map<string, string>()
+  const storage: PaneOrderStorageLike = {
+    getItem: k => store.get(k) ?? null,
+    setItem: (k, v) => { store.set(k, v) },
+  }
+  // 未保存 → null
+  assert.equal(loadPaneOrder('w1', storage), null)
+  // 保存后读回
+  savePaneOrder('w1', ['w1:p2', 'w1:p1'], storage)
+  assert.deepEqual(loadPaneOrder('w1', storage), ['w1:p2', 'w1:p1'])
+  // 键格式契约：herdr:pane-order:<ws>
+  assert.ok(store.has(paneOrderKey('w1')))
+  assert.equal(paneOrderKey('w1'), 'herdr:pane-order:w1')
+  // 不同 ws 隔离
+  assert.equal(loadPaneOrder('w2', storage), null)
+  // 覆盖写
+  savePaneOrder('w1', ['w1:p1'], storage)
+  assert.deepEqual(loadPaneOrder('w1', storage), ['w1:p1'])
+})
+
+test('CA-016: loadPaneOrder 损坏 JSON / 非数组 / 空数组 / 非字符串 → null 或过滤', () => {
+  const store = new Map<string, string>([
+    [paneOrderKey('bad-json'), '{oops'],
+    [paneOrderKey('not-array'), '{"a":1}'],
+    [paneOrderKey('empty'), '[]'],
+    [paneOrderKey('mixed'), '[1, "w1:p1", false, "w1:p2"]'],
+  ])
+  const storage: PaneOrderStorageLike = {
+    getItem: k => store.get(k) ?? null,
+    setItem: () => {},
+  }
+  assert.equal(loadPaneOrder('bad-json', storage), null)
+  assert.equal(loadPaneOrder('not-array', storage), null)
+  assert.equal(loadPaneOrder('empty', storage), null)
+  assert.deepEqual(loadPaneOrder('mixed', storage), ['w1:p1', 'w1:p2'])
+})
+
+test('CA-016: SSR/无 localStorage 防御 —— storage 不可用时 load 为 null、save 无操作', () => {
+  assert.equal(loadPaneOrder('w1', null), null)
+  assert.equal(savePaneOrder('w1', ['a'], null), undefined)
+  // 注入 storage 抛错（模拟 localStorage 被禁）→ 静默
+  const throwing: PaneOrderStorageLike = {
+    getItem: () => { throw new Error('denied') },
+    setItem: () => { throw new Error('denied') },
+  }
+  assert.equal(loadPaneOrder('w1', throwing), null)
+  assert.equal(savePaneOrder('w1', ['a'], throwing), undefined)
+})
+
+// ---------------------------------------------------------------------------
+// 名称校验（T12 · design-v2 §6.2 / §10）
+// ---------------------------------------------------------------------------
+
+test('CA-006/T12: validateLabel 去空白；空 → null（清除名称）', () => {
+  assert.equal(validateLabel(''), null)
+  assert.equal(validateLabel('   '), null)
+  assert.equal(validateLabel('\t\n '), null)
+})
+
+test('CA-006/T12: validateLabel 非空 trim 返回', () => {
+  assert.equal(validateLabel('  claude  '), 'claude')
+  assert.equal(validateLabel('agent A'), 'agent A')
+  assert.equal(validateLabel('中文字符'), '中文字符')
+})
+
+test('CA-006/T12: validateLabel 超长（>64）抛错', () => {
+  assert.throws(() => validateLabel('x'.repeat(65)), /at most 64 characters/)
+  // 边界：恰好 64 允许
+  assert.equal(validateLabel('x'.repeat(64)), 'x'.repeat(64))
+  // trim 后再判长：65 字符含前导空格 → trim 后 64，允许
+  assert.equal(validateLabel(' ' + 'x'.repeat(64)), 'x'.repeat(64))
+})
+
+// ── Agent 主题与日志行分类（pane-log 行级渲染） ─────────────────────────
+test('classifyLogLine: detects diff add/del with or without line numbers', () => {
+  assert.equal(classifyLogLine('+ added line'), 'diff-add')
+  assert.equal(classifyLogLine('- removed line'), 'diff-del')
+  assert.equal(classifyLogLine('    110 +'), 'diff-add')
+  assert.equal(classifyLogLine('    112 +14'), 'diff-add')
+  assert.equal(classifyLogLine('    115 -'), 'diff-del')
+  assert.equal(classifyLogLine('+++ b/file.ts'), 'plain')
+  assert.equal(classifyLogLine('--- a/file.ts'), 'plain')
+})
+
+test('classifyLogLine: commands, headings, code fences, plain', () => {
+  assert.equal(classifyLogLine('❯ sh -c pwd'), 'cmd')
+  assert.equal(classifyLogLine('$ ls'), 'cmd')
+  assert.equal(classifyLogLine('  ❯ git status'), 'cmd')
+  assert.equal(classifyLogLine('## 测试缺口'), 'heading')
+  assert.equal(classifyLogLine('```'), 'code-fence')
+  assert.equal(classifyLogLine('~~~json'), 'code-fence')
+  assert.equal(classifyLogLine('普通输出行'), 'plain')
+})
+
+test('agentTheme: prefix match with lowercase', () => {
+  assert.equal(agentTheme('codex'), 'codex')
+  assert.equal(agentTheme('Codex'), 'codex')
+  assert.equal(agentTheme('pi-coding-agent'), 'pi')
+  assert.equal(agentTheme('pi'), 'pi')
+  assert.equal(agentTheme('claude-4'), 'claude')
+  assert.equal(agentTheme('dsh'), 'dsh')
+  assert.equal(agentTheme('unknown-agent'), 'other')
+  assert.equal(agentTheme(undefined), 'other')
 })

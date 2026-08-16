@@ -1,0 +1,50 @@
+// 轻量确认 modal（删除交互 T11）：DSH token 样式，遮罩 + 卡片。
+// 独立组件以便 PaneCard 与 HerdrView 共用；受控：visible + 文案 props。
+// 确认/取消均为原生 <button>（样式由本插件 CSS 控制），不依赖 primitives 的
+// 未验证 variant/className 透传，保证破坏性确认按钮视觉确定。
+
+import type { ReactNode } from 'react'
+import type { MouseEvent } from 'react'
+
+export interface ConfirmDialogProps {
+  /** 是否显示。 */
+  visible: boolean
+  /** 确认文案（渲染为 ReactNode，用于嵌入 pane/workspace 名与计数）。 */
+  title: ReactNode
+  /** 确认按钮文字（默认「确定」）。 */
+  confirmLabel?: string
+  /** 确认中禁用按钮（提交期间防重复）。 */
+  busy?: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}
+
+/** 遮罩点击（非卡片）→ 取消；回车/点击确定 → 确认。 */
+export function ConfirmDialog({
+  visible,
+  title,
+  confirmLabel = '确定',
+  busy = false,
+  onConfirm,
+  onCancel,
+}: ConfirmDialogProps) {
+  if (!visible) return null
+  return (
+    <div
+      className="herdr-mask"
+      onPointerDown={(e: MouseEvent<HTMLDivElement>) => {
+        if (e.target === e.currentTarget && !busy) onCancel()
+      }}
+    >
+      <div className="herdr-modal" role="dialog" aria-modal="true">
+        <div className="herdr-modal-title">{title}</div>
+        <div className="herdr-modal-actions">
+          <button className="herdr-modal-btn" type="button" onClick={onCancel} disabled={busy}>取消</button>
+          <button className="herdr-modal-btn herdr-modal-btn-danger" type="button" onClick={onConfirm} disabled={busy}>
+            {busy ? '处理中…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
