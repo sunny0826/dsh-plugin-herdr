@@ -2,11 +2,14 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
-import { buildGroups, dotState, shouldAutoExpand, toggleCollapse } from '../client-logic.ts'
+import { dotState, filterGroupsToSession, shouldAutoExpand, toggleCollapse } from '../client-logic.ts'
 import { useFloatingDrag, SNAP } from './floating-drag.ts'
+import { HERDR_LOGO_PATH_D } from './logo-path.ts'
+import { useHerdrMode } from './mode.ts'
 import { focusPaneInHerdrTab, getSessionId } from './navigation.ts'
+import { fetchSelfPaneId } from './session-pane.ts'
 import { HerdrServerBanner } from './server-banner.tsx'
-import { getStatusScope, useHerdrStatus } from './store.ts'
+import { useHerdrStatus } from './store.ts'
 import type { HerdrAgentStatus } from './types.ts'
 
 /**
@@ -26,19 +29,23 @@ export function HerdrLogo({ className }: { className?: string }) {
       preserveAspectRatio="xMidYMid meet"
     >
       <g fill="currentColor" transform="translate(0 512) scale(.1 -.1)" stroke="none">
-        <path d="M2794 3710 c-129 -33 -299 -135 -359 -214 -21 -28 -26 -42 -21 -63 9 -38 154 -178 199 -192 32 -11 41 -9 104 23 171 86 354 70 475 -43 150 -138 150 -379 0 -511 -107 -95 -278 -94 -386 2 l-46 40 -11 -29 c-16 -40 -14 -122 4 -164 60 -144 264 -222 452 -174 360 92 559 494 430 868 -36 103 -81 173 -175 267 -71 72 -100 93 -180 132 -52 26 -127 54 -167 62 -96 21 -230 20 -319 -4z M2183 3695 c-116 -32 -221 -108 -273 -199 -17 -28 -30 -54 -30 -58 0 -4 20 1 45 12 66 28 220 68 294 76 64 7 65 7 137 83 40 41 71 77 69 79 -2 2 -21 8 -42 13 -55 12 -140 10 -200 -6z M2212 3388 c-159 -22 -390 -122 -559 -241 -299 -210 -585 -600 -609 -828 -12 -118 40 -251 125 -318 96 -76 178 -98 426 -116 110 -8 224 -21 254 -29 125 -34 230 -115 272 -211 11 -24 24 -81 30 -127 20 -170 65 -271 166 -374 34 -35 63 -65 63 -67 0 -1 -10 -27 -22 -57 -29 -76 -37 -259 -14 -350 42 -170 158 -318 311 -397 44 -23 98 -46 120 -52 22 -6 45 -14 51 -18 5 -5 15 -48 22 -96 6 -48 14 -92 17 -97 4 -6 415 -10 1131 -10 l1124 0 0 1584 0 1585 -55 -19 c-84 -29 -143 -68 -232 -154 l-83 -78 -54 49 c-111 102 -233 151 -391 160 -113 6 -199 -10 -298 -54 l-60 -27 -26 34 c-37 51 -120 134 -127 128 -3 -4 0 -34 7 -67 17 -89 7 -268 -21 -356 -103 -328 -377 -545 -688 -545 -161 0 -273 41 -373 137 -37 35 -66 75 -85 116 -79 173 -8 407 124 407 44 0 68 -14 117 -66 74 -78 167 -82 238 -9 60 62 72 147 33 231 -42 90 -120 130 -238 122 -50 -4 -85 -14 -131 -37 -89 -45 -122 -52 -176 -40 -92 20 -262 163 -302 253 -11 25 -21 45 -22 45 -1 -1 -30 -6 -65 -11z m-256 -505 c115 -88 129 -102 132 -131 2 -18 -2 -40 -9 -49 -7 -8 -69 -55 -138 -105 -103 -73 -130 -88 -151 -83 -35 8 -51 34 -48 74 3 31 12 42 83 92 44 31 80 61 82 66 1 4 -30 31 -69 58 -39 28 -77 56 -85 63 -18 19 -16 72 4 94 32 35 63 23 199 -79z m528 -88 c23 -24 28 -52 14 -82 l-13 -28 -141 -3 c-130 -2 -142 -1 -158 17 -23 26 -24 66 -1 91 16 18 32 20 151 20 105 0 136 -3 148 -15z" />
+        <path d={HERDR_LOGO_PATH_D} />
       </g>
     </svg>
   )
 }
 
 export function HerdrPaneList() {
+  const herdrMode = useHerdrMode()
   const { snap, error } = useHerdrStatus()
   const [collapsed, setCollapsed] = useState(false)
   const [collapsedWs, setCollapsedWs] = useState<Set<string>>(new Set())
   const [selfPaneId, setSelfPaneId] = useState<string | null>(null)
   const [inSession, setInSession] = useState(false)
+  // 连续未命中计数：查询多次仍 null 才判定「未绑定」（bind 异步完成前的短暂空窗不算）
+  const [paneMisses, setPaneMisses] = useState(0)
   const lastSessionId = useRef<string | undefined>(undefined)
+  const selfPaneIdRef = useRef<string | null>(null)
   const prevStatus = useRef<string | undefined>(undefined)
   const panelRef = useRef<HTMLDivElement | null>(null)
   const minRef = useRef<HTMLButtonElement | null>(null)
@@ -102,23 +109,29 @@ export function HerdrPaneList() {
     return () => clearInterval(timer)
   }, [])
 
-  // 当前会话 id（sessions 服务；变化时查询绑定 pane）
+  // 当前会话 id（sessions 服务；变化时重置查询）。
+  // 同一会话下持续查询直到命中：bind 在 agent/created 或首个模型请求（兜底）时
+  // 才完成，首次查询可能早于绑定——只查一次会导致面板永远停留在空态。
   useEffect(() => {
     const timer = setInterval(() => {
       const id = getSessionId()
-      if (id === lastSessionId.current) return
-      lastSessionId.current = id
-      if (!id) {
+      if (id !== lastSessionId.current) {
+        lastSessionId.current = id
         setSelfPaneId(null)
+        setPaneMisses(0)
         return
       }
-      fetch('/herdr-session-pane?agent=' + encodeURIComponent(id))
-        .then(r => r.json())
-        .then((d: { pane_id?: string | null }) => setSelfPaneId(d.pane_id ?? null))
-        .catch(() => setSelfPaneId(null))
+      if (!id || selfPaneIdRef.current) return
+      void fetchSelfPaneId(id).then(paneId => {
+        setSelfPaneId(paneId)
+        if (!paneId) setPaneMisses(m => m + 1)
+      })
     }, 1000)
     return () => clearInterval(timer)
   }, [])
+  useEffect(() => {
+    selfPaneIdRef.current = selfPaneId
+  }, [selfPaneId])
 
   // 自动展开：本对话 pane 状态 working 边沿（非 working → working 且处于折叠）
   const selfStatus = snap?.agents.find(a => a.pane_id === selfPaneId)?.status
@@ -147,7 +160,8 @@ export function HerdrPaneList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [collapsed])
 
-  if (!inSession) return null
+  // 非 herdr 模式不渲染面板（D1 已确认：与 Tab/胶囊一致门控）
+  if (!inSession || !herdrMode) return null
 
   // 折叠态：仅 Herdr logo（可拖动、吸附）
   if (collapsed) {
@@ -168,25 +182,12 @@ export function HerdrPaneList() {
     )
   }
 
-  // 过滤提示（与 HerdrView 一致，design-v2 §7.4）：仅本项目 matched/total；scope=all 时显示全部（total）。
-  // 悬浮面板自身不提供 scope 切换（切换在 Herdr Tab 工具栏），只做提示展示。
-  const filter = snap?.filter
-  const scope = getStatusScope()
-  const paneListFilterHint =
-    scope === 'project' && !!filter && filter.total > 0 ? (
-      <span className="herdr-filter-hint" title="在项目目录内打开的 herdr 只显示本目录 workspace（仅本项目 / 全部）">
-        仅本项目（{filter.matched}/{filter.total}）
-      </span>
-    ) : scope === 'all' && !!filter && filter.total > 0 ? (
-      <span className="herdr-filter-hint" title="当前显示全部 workspace">
-        全部（{filter.total}）
-      </span>
-    ) : null
-
+  // 面板会话聚焦（design: herdr-mode-gating §4.4）：只显示包含本会话绑定 pane 的
+  // workspace 组；selfPaneId 未决/无匹配时显示空态。scope 切换保留在 Herdr Tab 工具栏。
   const agentByPane = new Map<string, HerdrAgentStatus>((snap?.agents ?? []).map(a => [a.pane_id, a]))
-  const groups = buildGroups(snap?.topology)
-  const paneCount = snap?.topology?.panes.length ?? 0
-  const wsCount = snap?.topology?.workspaces.length ?? 0
+  const groups = filterGroupsToSession(snap?.topology, selfPaneId)
+  const paneCount = groups.reduce((n, g) => n + g.panes.length, 0)
+  const wsCount = groups.length
 
   const toggleWs = (id: string) => {
     setCollapsedWs(prev => toggleCollapse(prev, id))
@@ -215,10 +216,9 @@ export function HerdrPaneList() {
       </div>
       {error ? <div className="herdr-server-error" style={{ padding: '0 12px 6px' }}>herdr status: {error}</div> : null}
       <div className="pane-list-body">
-        {paneListFilterHint ? <div className="pane-list-filter">{paneListFilterHint}</div> : null}
         {groups.length === 0 ? (
           <div className="herdr-empty">
-            暂无 pane
+            {selfPaneId || paneMisses >= 3 ? '本会话暂无 pane' : '正在获取本会话 pane…'}
           </div>
         ) : groups.map(g => (
           <div key={g.workspace.workspace_id} className="pl-group" data-collapsed={collapsedWs.has(g.workspace.workspace_id) || undefined}>

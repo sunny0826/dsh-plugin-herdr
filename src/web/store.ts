@@ -7,32 +7,16 @@ import { useCallback, useEffect, useState } from 'react'
 import { createStatusStore, parseStartResponse } from '../client-logic.ts'
 import type { HerdrStatusSnapshot } from './types.ts'
 
-export type StatusScope = 'project' | 'all'
-
-// 当前看板 scope（模块级共享，与 statusStore 同源）：切换后立即重拉，所有订阅方（HerdrView /
-// HerdrPaneList / HeadlessPill）随同更新——悬浮面板与 Herdr Tab 行为一致（design-v2 §7.4）。
-let statusScope: StatusScope = 'project'
-
+// 会话聚焦（design: herdr-mode-gating）：Tab/面板都只显示本会话专属 workspace，
+// 不再需要 project/all scope 切换——固定 project 轮询即可（本会话 workspace 有
+// 服务端 self-pane 豁免，恒不被过滤）。
 async function fetchStatus(signal: AbortSignal): Promise<HerdrStatusSnapshot> {
-  const qs = statusScope === 'all' ? '?scope=all' : ''
-  const resp = await fetch('/herdr-status' + qs, { signal })
+  const resp = await fetch('/herdr-status', { signal })
   if (!resp.ok) throw new Error(`herdr-status HTTP ${resp.status}`)
   return (await resp.json()) as HerdrStatusSnapshot
 }
 
 const statusStore = createStatusStore<HerdrStatusSnapshot>({ fetch: fetchStatus })
-
-/** 切换看板 scope（'project' 目录过滤 / 'all' 全量）；变更时触发立即重拉。 */
-export function setStatusScope(scopeArg: StatusScope): void {
-  if (scopeArg === statusScope) return
-  statusScope = scopeArg
-  statusStore.refresh()
-}
-
-/** 读取当前看板 scope。 */
-export function getStatusScope(): StatusScope {
-  return statusScope
-}
 
 export function useHerdrStatus(): { snap: HerdrStatusSnapshot | null; error: string | null; refresh: () => void } {
   const [snap, setSnap] = useState<HerdrStatusSnapshot | null>(statusStore.getSnap())

@@ -1,26 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import { applyPaneOrder, buildGroups, loadPaneOrder, reorderPanes, savePaneOrder, validateLabel } from '../client-logic.ts'
+import { applyPaneOrder, filterGroupsToSession, loadPaneOrder, reorderPanes, savePaneOrder, validateLabel } from '../client-logic.ts'
 import { getPendingFocusPane, setPendingFocusPane, getSessionId } from './navigation.ts'
+import { fetchSelfPaneId } from './session-pane.ts'
 import { HerdrServerBanner } from './server-banner.tsx'
-import { useHerdrStatus, useHerdrStart, setStatusScope, type StatusScope } from './store.ts'
+import { useHerdrStatus, useHerdrStart } from './store.ts'
+import { useHerdrMode } from './mode.ts'
 import type { HerdrAgentStatus, HerdrPaneView, HerdrWorkspaceView } from './types.ts'
 import { PaneCard } from './pane-card.tsx'
 import { ConfirmDialog } from './confirm-dialog.tsx'
 
-// localStorage 键：看板 scope（design-v2 §7.4 契约④）
-const SCOPE_STORAGE_KEY = 'herdr:show-all-ws'
-
-/** 读 scope（SSR 防御：无 localStorage / 非法值回退 'project'）。 */
-function loadStatusScope(): StatusScope {
-  if (typeof localStorage === 'undefined') return 'project'
-  return localStorage.getItem(SCOPE_STORAGE_KEY) === 'all' ? 'all' : 'project'
-}
-
 // 会话页 header 状态胶囊（conversation.session.header.actions）
 export function HerdrHeaderPill() {
+  const herdrMode = useHerdrMode()
   const { snap, refresh } = useHerdrStatus()
   const { starting, startError, start } = useHerdrStart()
+  if (!herdrMode) return null
   const server = snap?.server
   const running = server?.running === true
   const stopped = snap !== null && server !== null && !running
@@ -51,6 +46,7 @@ export function HerdrHeaderPill() {
 type ActionError = { message: string; key: number }
 
 export function HerdrView() {
+  const herdrMode = useHerdrMode()
   const { snap, error, refresh } = useHerdrStatus()
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [openPanes, setOpenPanes] = useState<Set<string>>(new Set())
@@ -62,6 +58,7 @@ export function HerdrView() {
   // ── T11/T12 本地乐观状态 ──────────────────────────────────────────
   // selfPaneId：本对话绑定 pane（不渲染 ✕）
   const [selfPaneId, setSelfPaneId] = useState<string | null>(null)
+  const selfPaneIdRef = useRef<string | null>(null)
   // 关闭成功后的本地隐藏集（乐观移除；轮询收敛/失败回滚前过滤展示）
   const [hiddenPaneIds, setHiddenPaneIds] = useState<Set<string>>(new Set())
   const [hiddenWsIds, setHiddenWsIds] = useState<Set<string>>(new Set())
@@ -73,21 +70,15 @@ export function HerdrView() {
   const [wsDraft, setWsDraft] = useState('')
   // 同步防重入：workspace rename 的 Enter 与随之而来的 blur 各触发一次，用 ref 去重
   const wsCommittedRef = useRef(false)
+  // 已查询过的会话 id（绑定 pane 轮询去重）
+  const lastSessionId = useRef<string | undefined>(undefined)
   const [wsOpBusy, setWsOpBusy] = useState(false)
   const [actionError, setActionError] = useState<ActionError | null>(null)
-  // scope 切换（T13）
-  const [scope, setScope] = useState<StatusScope>(() => loadStatusScope())
   // 跨 workspace drop 提示（T15）：拖动手柄拖动但未在同 workspace 内落位时显示的顶部横幅
   const [dropHint, setDropHint] = useState<string | null>(null)
   const dropHintTimerRef = useRef<number | undefined>(undefined)
   // 本次拖拽是否已在同 workspace 内成功落位（用于区分「跨 ws / 未落位」与「正常排序」）
   const droppedRef = useRef(false)
-
-  // 应用 scope：初始挂载 + 切换时驱动共享 store
-  useEffect(() => {
-    setStatusScope(scope)
-    if (typeof localStorage !== 'undefined') localStorage.setItem(SCOPE_STORAGE_KEY, scope)
-  }, [scope])
 
   // 卸载时清理 drop 提示定时器
   useEffect(() => () => {
@@ -128,24 +119,25 @@ export function HerdrView() {
     return () => document.removeEventListener('herdr:focus-pane', handler)
   }, [])
 
-  // 本对话 pane 绑定查询（参照 pane-list 轮询模式；只读 /herdr-session-pane）
+  // 本对话 pane 绑定查询（与 pane-list 同源轮询；只读 /herdr-session-pane）。
+  // 同一会话下持续查询直到命中——bind 在 created/首个模型请求才完成，首次查询
+  // 可能早于绑定，只查一次会让 ✕ 保护与自识别长期失效。
   useEffect(() => {
-    let last: string | undefined
     const timer = setInterval(() => {
       const id = getSessionId()
-      if (id === last) return
-      last = id
-      if (!id) {
+      if (id !== lastSessionId.current) {
+        lastSessionId.current = id
         setSelfPaneId(null)
         return
       }
-      fetch('/herdr-session-pane?agent=' + encodeURIComponent(id))
-        .then(r => r.json())
-        .then((d: { pane_id?: string | null }) => setSelfPaneId(d.pane_id ?? null))
-        .catch(() => setSelfPaneId(null))
+      if (!id || selfPaneIdRef.current) return
+      void fetchSelfPaneId(id).then(paneId => setSelfPaneId(paneId))
     }, 1000)
     return () => clearInterval(timer)
   }, [])
+  useEffect(() => {
+    selfPaneIdRef.current = selfPaneId
+  }, [selfPaneId])
 
   const agentByPane = new Map<string, HerdrAgentStatus>((snap?.agents ?? []).map(a => [a.pane_id, a]))
   // panes → workspace_id 映射（跨 workspace drop 校验用）
@@ -154,8 +146,9 @@ export function HerdrView() {
     for (const p of snap?.topology?.panes ?? []) m.set(p.pane_id, p.workspace_id)
     return m
   }, [snap?.topology])
-  // buildGroups 一次 memo（依赖 topology），随后按隐藏集过滤 + 持久化顺序覆盖每个 ws 的 pane 顺序
-  const groups = useMemo(() => buildGroups(snap?.topology), [snap?.topology])
+  // 会话聚焦（design: herdr-mode-gating）：Tab 只显示本会话专属 workspace 及其 pane；
+  // 随后按隐藏集过滤 + 持久化顺序覆盖每个 ws 的 pane 顺序
+  const groups = useMemo(() => filterGroupsToSession(snap?.topology, selfPaneId), [snap?.topology, selfPaneId])
   const orderedByWs = useMemo(() => {
     const m = new Map<string, HerdrPaneView[]>()
     for (const g of groups) {
@@ -184,10 +177,9 @@ export function HerdrView() {
       })
   }, [groups, hiddenWsIds, labelOverrides])
 
-  const paneCount = snap?.topology?.panes.length ?? snap?.agents.length ?? 0
-  const wsCount = visibleGroups.length ?? 0
-  const agentCount = snap?.agents.length ?? 0
-  const filter = snap?.filter
+  const paneCount = visibleGroups.reduce((n, g) => n + g.panes.length, 0)
+  const wsCount = visibleGroups.length
+  const agentCount = visibleGroups.reduce((n, g) => n + g.panes.filter(p => agentByPane.has(p.pane_id)).length, 0)
 
   const toggleWs = (id: string) => {
     setCollapsed(prev => {
@@ -365,12 +357,6 @@ export function HerdrView() {
     clearDrag()
   }, [dragId, insertPos, orderedByWs, paneWsByPane, clearDrag])
 
-  // scope=all 时的过滤提示：仅当存在过滤元数据且 total>0 时
-  const showFilterHint = scope === 'project' && !!filter && filter.total > 0
-  const filteredEmpty =
-    scope === 'project' && groups.length === 0 && !!filter && filter.total > 0 && filter.matched === 0
-  const scopeAll = scope === 'all'
-
   // 渲染 workspace 名区域：重命名 input 或（label + id + ✎）
   const renderWsName = (g: { workspace: HerdrWorkspaceView }) => {
     if (renamingWs === g.workspace.workspace_id) {
@@ -407,6 +393,9 @@ export function HerdrView() {
     )
   }
 
+  // 非 herdr 模式不渲染视图（tab 已由 CSS 门控隐藏；此处兜底会话正文空白）
+  if (!herdrMode) return null
+
   return (
     <div className="herdr-root">
       <HerdrServerBanner snap={snap} error={error} onStarted={refresh} />
@@ -417,35 +406,8 @@ export function HerdrView() {
         <span className="herdr-head-title">Herdr</span>
         <span className="herdr-head-stats">
           {wsCount} workspaces · {paneCount} panes · {agentCount} agents
-          {showFilterHint ? (
-            <span className="herdr-filter-hint" title="在项目目录内打开的 herdr 只显示本目录 workspace">
-              仅本项目（{filter!.matched}/{filter!.total}）
-            </span>
-          ) : scopeAll && filter && filter.total > 0 ? (
-            <span className="herdr-filter-hint" title="当前显示全部 workspace">
-              全部（{filter.total}）
-            </span>
-          ) : null}
         </span>
         <span className="herdr-head-actions">
-          <div className="herdr-scope-toggle" role="group" aria-label="看板范围">
-            <button
-              type="button"
-              className={'herdr-scope-pill' + (scope === 'project' ? ' active' : '')}
-              title="只显示本项目目录内的 workspace"
-              onClick={() => setScope('project')}
-            >
-              仅本项目
-            </button>
-            <button
-              type="button"
-              className={'herdr-scope-pill' + (scope === 'all' ? ' active' : '')}
-              title="显示全部项目目录的 workspace"
-              onClick={() => setScope('all')}
-            >
-              显示全部
-            </button>
-          </div>
           <Button variant="outline" size="sm" onClick={refresh}>刷新</Button>
         </span>
       </div>
@@ -470,21 +432,7 @@ export function HerdrView() {
 
       {visibleGroups.length === 0 ? (
         <div className="herdr-empty">
-          {filteredEmpty ? (
-            <>
-              当前目录没有 herdr workspace。
-              <br />
-              <button type="button" className="herdr-empty-show-all" onClick={() => setScope('all')}>
-                显示全部
-              </button>
-            </>
-          ) : (
-            <>
-              No panes yet.
-              <br />
-              Start a coding agent in a Herdr pane (e.g. <code>claude</code>) and it will appear here with live output.
-            </>
-          )}
+          {selfPaneId ? '本会话暂无 pane' : '正在获取本会话 pane…'}
         </div>
       ) : (
         <div className="herdr-ws-list">

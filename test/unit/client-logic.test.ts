@@ -2,6 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  HERDR_PRESET_ID,
   agentTheme,
   applyPaneOrder,
   buildGroups,
@@ -10,7 +11,9 @@ import {
   compareWorkspaceId,
   computeSnapPosition,
   createStatusStore,
+  deriveHerdrMode,
   dotState,
+  filterGroupsToSession,
   formatTime,
   isDragMovement,
   loadPaneOrder,
@@ -373,4 +376,68 @@ test('agentTheme: prefix match with lowercase', () => {
   assert.equal(agentTheme('dsh'), 'dsh')
   assert.equal(agentTheme('unknown-agent'), 'other')
   assert.equal(agentTheme(undefined), 'other')
+})
+
+// ---------------------------------------------------------------------------
+// Herdr 模式判定与面板会话聚焦（design: herdr-mode-gating MG-02）
+// ---------------------------------------------------------------------------
+
+test('MG-02: HERDR_PRESET_ID 与服务端 preset id 一致（preset-install.ts PRESET_ID）', () => {
+  assert.equal(HERDR_PRESET_ID, 'herdr')
+})
+
+test('MG-02: deriveHerdrMode 按当前会话 agentPreset 判定', () => {
+  const byId = {
+    s1: { agentPreset: 'herdr' },
+    s2: { agentPreset: 'default' },
+    s3: {},
+  }
+  assert.equal(deriveHerdrMode(byId, 's1'), true)
+  assert.equal(deriveHerdrMode(byId, 's2'), false)
+  assert.equal(deriveHerdrMode(byId, 's3'), false)
+  // 未知/无当前会话/无列表
+  assert.equal(deriveHerdrMode(byId, 's9'), false)
+  assert.equal(deriveHerdrMode(byId, undefined), false)
+  assert.equal(deriveHerdrMode(undefined, 's1'), false)
+  // 大小写敏感（preset id 是目录名）
+  assert.equal(deriveHerdrMode({ s1: { agentPreset: 'Herdr' } }, 's1'), false)
+})
+
+test('MG-02: filterGroupsToSession 只保留包含 selfPaneId 的 workspace 组', () => {
+  const topology: HerdrTopology = {
+    workspaces: [{ workspace_id: 'w1' }, { workspace_id: 'w2' }],
+    tabs: [
+      { tab_id: 't1', workspace_id: 'w1' },
+      { tab_id: 't2', workspace_id: 'w2' },
+    ],
+    panes: [
+      { pane_id: 'w1:p1', workspace_id: 'w1', focused: true },
+      { pane_id: 'w1:p2', workspace_id: 'w1', focused: false },
+      { pane_id: 'w2:p1', workspace_id: 'w2', focused: false },
+    ],
+  }
+  const groups = filterGroupsToSession(topology, 'w1:p1')
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].workspace.workspace_id, 'w1')
+  // 组内 panes 保持 buildGroups 自然排序
+  assert.deepEqual(groups[0].panes.map(p => p.pane_id), ['w1:p1', 'w1:p2'])
+  assert.deepEqual(groups[0].tabs.map(t => t.tab_id), ['t1'])
+  // workspace 排序契约保持（单组时无影响，但组形态与 buildGroups 一致）
+  assert.deepEqual(filterGroupsToSession(topology, 'w2:p1')[0].workspace.workspace_id, 'w2')
+})
+
+test('MG-02: filterGroupsToSession 边界——selfPaneId 未决 / pane 不存在 / 空拓扑', () => {
+  const topology: HerdrTopology = {
+    workspaces: [{ workspace_id: 'w1' }],
+    tabs: [],
+    panes: [{ pane_id: 'w1:p1', workspace_id: 'w1', focused: true }],
+  }
+  assert.deepEqual(filterGroupsToSession(topology, null), [])
+  assert.deepEqual(filterGroupsToSession(topology, undefined), [])
+  assert.deepEqual(filterGroupsToSession(topology, ''), [])
+  // pane 已关闭（绑定仍在但拓扑中已无）
+  assert.deepEqual(filterGroupsToSession(topology, 'w1:p9'), [])
+  // 空/缺失 topology
+  assert.deepEqual(filterGroupsToSession(undefined, 'w1:p1'), [])
+  assert.deepEqual(filterGroupsToSession({ workspaces: [], tabs: [], panes: [] }, 'w1:p1'), [])
 })
