@@ -1,5 +1,7 @@
 # dsh-plugin-herdr
 
+> [English](README.md) | **简体中文**
+
 DeepSeek Harness（DSH）的 Herdr 控制面插件：在 DSH 会话中观察与驱动
 [Herdr](https://herdr.dev)——面向 AI 编码代理的终端工作区管理器。
 
@@ -200,10 +202,3 @@ pnpm test         # 单测（node --test）
 pnpm test:integration  # build + run.mjs + extended.mjs + events.mjs + close-rename.mjs（真实 herdr；不可用时 SKIP）
 pnpm gen:types    # 从 herdr schema fixture 重新生成协议类型
 ```
-
-## 兼容性
-
-- 已验证 **herdr 0.8.0 / protocol 19 / schema_version 1**（fixture
-  `test/fixtures/herdr-api.schema.json` 与线上 `herdr api schema` 一致；
-  `pnpm gen:types:check` 漂移即失败）。
-- 内部设计与任务文档位于 `docs/`（gitignored，不随仓库提交）。

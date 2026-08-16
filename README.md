@@ -1,5 +1,7 @@
 # dsh-plugin-herdr
 
+> **English** | [简体中文](README.zh-CN.md)
+
 Herdr control-plane plugin for DeepSeek Harness (DSH): observe and drive
 [Herdr](https://herdr.dev) — a terminal workspace manager for AI coding agents —
 from DSH sessions.
@@ -221,10 +223,3 @@ pnpm test         # unit tests (node --test)
 pnpm test:integration  # build + run.mjs + extended.mjs + events.mjs + close-rename.mjs (real herdr; SKIPs when unavailable)
 pnpm gen:types    # regenerate protocol types from the herdr schema fixture
 ```
-
-## Compatibility
-
-- Verified against **herdr 0.8.0 / protocol 19 / schema_version 1** (the
-  fixture `test/fixtures/herdr-api.schema.json` matches live `herdr api schema`;
-  `pnpm gen:types:check` fails on drift).
-- Internal design/task docs live under `docs/` (gitignored, not committed).
