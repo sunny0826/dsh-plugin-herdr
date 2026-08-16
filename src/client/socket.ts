@@ -315,9 +315,10 @@ export class SocketHerdrClient extends HerdrClient {
       const { result } = await this.callOnce('agent.explain', { target: req.target ?? null })
       return result
     } catch (err) {
-      // 传输对齐（零回归）：CLI 时代服务器业务错误静默返回 {}（result ?? {}）。
-      // agent_explain_unavailable（目标无检测 agent）是业务性失败，按值返回而非抛错
-      if (err instanceof HerdrError && err.serverCode === 'agent_explain_unavailable') {
+      // 传输对齐（零回归）：CLI 时代对任何服务器错误 envelope 静默返回 {}（result ?? {}）。
+      // 业务性失败（agent_not_found / agent_explain_unavailable 等）按值返回而非抛错；
+      // 连接/协议类错误（HERDR_UNAVAILABLE/TIMEOUT/PROTOCOL/ABORTED）照常抛出
+      if (err instanceof HerdrError && err.code === 'HERDR_ERROR') {
         return {}
       }
       throw err

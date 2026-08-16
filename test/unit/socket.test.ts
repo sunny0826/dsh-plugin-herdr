@@ -134,17 +134,34 @@ test('socket: error envelope -> HERDR_ERROR with serverCode passthrough', async 
   }
 })
 
-test('socket: agentExplain maps agent_explain_unavailable to {} (CLI parity)', async () => {
-  const { path, server, dir } = await startFakeServer((conn, req, close) => {
-    replyErrorAndClose(conn, req, 'agent_explain_unavailable', 'no detected agent label')
-  })
+test('socket: agentExplain maps server business errors to {} (CLI parity)', async () => {
+  // CLI 时代对任何服务器错误 envelope 都返回 {}（result ?? {}）；socket 侧对齐：
+  // agent_explain_unavailable（无检测 agent）与 agent_not_found（目标不存在）均为业务失败
+  for (const code of ['agent_explain_unavailable', 'agent_not_found']) {
+    const { path, server, dir } = await startFakeServer((conn, req, close) => {
+      replyErrorAndClose(conn, req, code, code + ': boom')
+    })
+    try {
+      const client = makeClient(path)
+      const res = await client.agentExplain({ target: 'w1:p1' })
+      assert.deepEqual(res, {}, `${code} is a value, not an error (parity with removed CLI transport)`)
+      client.close()
+    } finally {
+      server.close(); rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  // 连接类错误照常抛出（不吞）
+  const dir2 = mkdtempSync(join(tmpdir(), 'herdr-sock-test-'))
   try {
-    const client = makeClient(path)
-    const res = await client.agentExplain({ target: 'w1:p1' })
-    assert.deepEqual(res, {}, 'business failure is a value, not an error (parity with removed CLI transport)')
+    const client = new SocketHerdrClient(new Context(), { socketPath: join(dir2, 'missing.sock'), timeoutMs: 1000 })
+    await assert.rejects(() => client.agentExplain({ target: 'w1:p1' }), (err: Error) => {
+      assert.ok(err instanceof HerdrError)
+      assert.equal(err.code, 'HERDR_UNAVAILABLE')
+      return true
+    })
     client.close()
   } finally {
-    server.close(); rmSync(dir, { recursive: true, force: true })
+    rmSync(dir2, { recursive: true, force: true })
   }
 })
 
