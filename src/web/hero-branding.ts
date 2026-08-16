@@ -18,8 +18,8 @@ export const HERDR_HERO_TEXT_PLAIN = '探索未知之境'
 export const HERDR_HERO_TEXT_EN = 'Herdr helps you explore the unknown'
 /** 英文品牌特效段。 */
 export const HERDR_HERO_TEXT_BRAND_EN = 'Herdr helps you'
-/** 英文原样式段。 */
-export const HERDR_HERO_TEXT_PLAIN_EN = 'explore the unknown'
+/** 英文原样式段（前缀空格：两段由独立伪元素渲染，拼接需显式空格；中文无此问题）。 */
+export const HERDR_HERO_TEXT_PLAIN_EN = ' explore the unknown'
 
 /** 品牌紫 token（styles.ts CSS 变量引用；取值 = herdr.dev 官网 site.css 的 --spot 实测，design §4.1）。 */
 export const HERDR_BRAND_LIGHT = '#8839ef' // herdr.dev paper 模式
