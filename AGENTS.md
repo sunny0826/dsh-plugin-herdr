@@ -38,8 +38,9 @@ Contributor guide for **dsh-plugin-herdr**, the Herdr control-plane plugin for D
 The Web panel supports runtime language switching (zh / en); every new user-facing copy must ship both languages:
 
 - **Language source**: DSH's `html lang` is static (`zh-CN`) — the runtime language lives in the `locale` service (LocaleFace: `getSnapshot()` / `subscribe`). The client injects it in `src/web/app.tsx` (`inject = ['slots', 'locale']`) and `hero-branding.ts`'s `setHerdrLang()` mirrors it to `data-herdr-lang` on marked elements; CSS switches copy per attribute (`:lang()` is unreliable).
-- **Copy constants**: zh + en pairs (e.g. `HERDR_HERO_TEXT` / `HERDR_HERO_TEXT_EN` in `src/web/hero-branding.ts`); add both languages and extend the drift-sentinel tests in `test/unit/hero-branding.test.ts`.
-- **Custom agent presets have no i18n** (`preset.yml` `name` is a single string; built-ins translate via shell locale keys) — the hero-page preset chip is localized by DOM text replacement (`HERDR_PRESET_NAME_ZH` / `HERDR_PRESET_NAME_EN`), re-applied by the MutationObserver.
+- **Shared panel dictionary**: `src/web/i18n.ts` is the single source for panel copy — `I18N_KEYS` (key → `{ zh, en }`), `t(key, params)` templating, and `useHerdrLang()` / `getHerdrLang()` / `setHerdrLang()`. New user-visible panel copy goes there with both languages; `test/unit/i18n.test.ts` enforces dictionary completeness.
+- **Hero copy constants**: zh + en pairs (e.g. `HERDR_HERO_TEXT` / `HERDR_HERO_TEXT_EN` in `src/web/hero-branding.ts`); add both languages and extend the drift-sentinel tests in `test/unit/hero-branding.test.ts`.
+- **Custom agent presets have no i18n** (`preset.yml` `name`/`description` are single strings; built-ins translate via shell locale keys) — the hero-page preset chip and the menu/settings name+description are localized by DOM text replacement (`HERDR_PRESET_NAME_ZH/EN`, `HERDR_PRESET_DESC_ZH/EN`), re-applied by the MutationObserver / TreeWalker.
 - The archived interactive prototype (`docs/archive/`) simulates the language switch for manual verification.
 
 ## Commit & Pull Request Guidelines
