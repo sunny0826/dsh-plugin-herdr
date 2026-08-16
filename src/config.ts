@@ -27,6 +27,8 @@ export interface Config {
   }
   /** 是否启用 DSH → Herdr 状态上报（仅 HERDR_ENV=1 时生效，§4 ADR-6）。 */
   reportState: boolean
+  /** 项目根目录（看板过滤用；缺省 process.cwd()，§7.2）。 */
+  projectRoot?: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -38,9 +40,11 @@ export const Config: Schema<Config> = Schema.object({
   allowBackground: Schema.boolean().default(false),
   events: Schema.object({
     enabled: Schema.boolean().default(false),
-    maxReconnectMs: Schema.number().default(30000),
+    // CA-014：重连退避上限有边界（1s–10min），非法配置加载即失败
+    maxReconnectMs: Schema.number().min(1000).max(600000).default(30000),
   }),
   reportState: Schema.boolean().default(true),
+  projectRoot: Schema.string(),
 })
 
 /** 解析顺序（§6.2 修订）：显式配置 > HERDR_BIN_PATH > PATH 中的 herdr。 */

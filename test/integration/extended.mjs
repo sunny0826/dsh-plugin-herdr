@@ -2,9 +2,17 @@
 // 运行：node test/integration/extended.mjs
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { homedir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../../lib/index.mjs'
 import { apply as applyClient } from '../../lib/client-entry.mjs'
+import { assertPreflight, ensureWorkspace } from './preflight.mjs'
+
+// CA-009：前置条件（herdr CLI + lib 构建 + server running）；不满足 → 明确 SKIP
+assertPreflight()
+
+// CA-009：不硬编码用户路径（原为 /Users/san3an）
+const HOME = homedir()
 
 const BASE_CONFIG = {
   cliPath: 'herdr',
@@ -39,8 +47,13 @@ const closePane = (id) => {
   const cf = await ctx.plugin({ name: 'c', apply: applyClient, inject: [] }, BASE_CONFIG)
   const f = await ctx.plugin({ name: 'h', apply, inject: ['tools', 'herdr', 'jobs'] }, BASE_CONFIG)
 
+  // 全新 server 没有默认 workspace（CI runner 场景）：先确保存在，
+  // 否则下方 snapshot.panes 为空（首个 workspace create 检查会创建后立即关闭）
+  let closeWorkspace = () => {}
+  closeWorkspace = await ensureWorkspace(ctx.herdr)
+
   await check('workspace create', async () => {
-    const r = await ctx.herdr.workspaceCreate({ label: 'dsh-m2-ext', cwd: '/Users/san3an' })
+    const r = await ctx.herdr.workspaceCreate({ label: 'dsh-m2-ext', cwd: HOME })
     assert.ok(r.workspace_id.startsWith('w'), r.workspace_id)
     try { execFileSync('herdr', ['workspace', 'close', r.workspace_id], { encoding: 'utf8' }) } catch { /* ignore */ }
   })
@@ -55,14 +68,21 @@ const closePane = (id) => {
   })
 
   await check('pane send keys + read', async () => {
-    // 复用首个 pane（不新建）
-    const paneId = (await ctx.herdr.snapshot()).panes[0].pane_id
-    // send-keys 是单键语义：逐字符文本键 + enter
-    const keys = [...'keyprobe'].map(ch => ch)  // 每个可打印字符是单独键
+    // 不 split 焦点 pane（本机焦点是忙碌的 agent pane，其终端不响应键盘输入）；
+    // 显式 split 一个无 agent 的普通 shell pane。
+    const snap = await ctx.herdr.snapshot()
+    const plain = snap.panes.find(p => !p.agent_status) ?? snap.panes[0]
+    assert.ok(plain?.pane_id, 'need a plain pane to split')
+    const { pane_id } = await ctx.herdr.paneSplit({ pane_id: plain.pane_id, direction: 'right', ratio: 0.5 })
+    createdPanes.add(pane_id)
+    // 本机实测：send-keys 每批首个键会丢失（zzz→zz）；前置一个可牺牲键，
+    // 无论它是否丢失，回显都包含完整的 keyprobe。
+    await new Promise(res => setTimeout(res, 1000))
+    const keys = ['x', ...'keyprobe'].map(ch => ch)
     keys.push('enter')
-    await ctx.herdr.paneSendKeys({ pane_id: paneId, keys })
+    await ctx.herdr.paneSendKeys({ pane_id, keys })
     await new Promise(res => setTimeout(res, 800))
-    const { text } = await ctx.herdr.paneRead({ pane_id: paneId, source: 'visible', lines: 10 })
+    const { text } = await ctx.herdr.paneRead({ pane_id, source: 'visible', lines: 60 })
     const flat = text.replace(/\n/g, '')
     assert.ok(flat.includes('keyprobe'), 'read should contain echoed keys: ' + flat.slice(-120))
   })
@@ -86,6 +106,7 @@ const closePane = (id) => {
   })
 
   for (const id of createdPanes) closePane(id)
+  closeWorkspace()
   await f.dispose()
   await cf.dispose()
 }
@@ -97,6 +118,7 @@ const closePane = (id) => {
   ctx.provide('jobs', { start: () => 'herdr-1' })
   const config = { ...BASE_CONFIG, transport: 'socket' }
   let cf, f
+  let socketPaneId = null
   try {
     cf = await ctx.plugin({ name: 'c', apply: applyClient, inject: [] }, config)
     f = await ctx.plugin({ name: 'h', apply, inject: ['tools', 'herdr', 'jobs'] }, config)
@@ -104,6 +126,10 @@ const closePane = (id) => {
     check('socket transport loads', () => { throw err })
     process.exit(failures === 0 ? 0 : 1)
   }
+
+  // 全新 server 没有默认 workspace（CI runner 场景）：先确保存在，split 才有目标
+  let closeWorkspace = () => {}
+  closeWorkspace = await ensureWorkspace(ctx.herdr)
 
   await check('socket transport loads and snapshots', async () => {
     const snap = await ctx.herdr.snapshot()
@@ -116,16 +142,25 @@ const closePane = (id) => {
     assert.ok(Array.isArray(agents))
   })
 
-  await check('socket pane split + run via send_text', async () => {
-    const { pane_id } = await ctx.herdr.paneSplit({ direction: 'right', ratio: 0.5 })
-    const res = await ctx.herdr.runCommand({ command: 'echo socket-probe', pane_id, wait_ms: 8000 }, new AbortController().signal)
-    assert.equal(res.kind, 'completed')
-    if (res.kind === 'completed') {
-      const flat = res.output.replace(/\n/g, '')
-      assert.ok(flat.includes('socket-probe'), 'send_text should execute: ' + flat.slice(-120))
+  try {
+    await check('socket pane split + run via send_text', async () => {
+      const { pane_id } = await ctx.herdr.paneSplit({ direction: 'right', ratio: 0.5 })
+      socketPaneId = pane_id
+      const res = await ctx.herdr.runCommand({ command: 'echo socket-probe', pane_id, wait_ms: 8000 }, new AbortController().signal)
+      assert.equal(res.kind, 'completed')
+      if (res.kind === 'completed') {
+        const flat = res.output.replace(/\n/g, '')
+        assert.ok(flat.includes('socket-probe'), 'send_text should execute: ' + flat.slice(-120))
+      }
+    })
+  } finally {
+    // CA-009：清理本块创建的资源（原实现遗留 split pane）
+    if (socketPaneId) {
+      try { execFileSync('herdr', ['pane', 'close', socketPaneId], { encoding: 'utf8' }) } catch { /* ignore */ }
     }
-  })
+  }
 
+  closeWorkspace()
   await f.dispose()
   await cf.dispose()
 }

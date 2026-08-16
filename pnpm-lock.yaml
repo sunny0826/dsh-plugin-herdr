@@ -12,16 +12,16 @@ importers:
         specifier: '*'
         version: 4.0.1
       '@deepseek-ai/dsh-agent':
-        specifier: '*'
+        specifier: ^0.1.0-rc.6
         version: 0.1.0-rc.6(b7ee0e09981eec7451624f4c595e37be)
       '@deepseek-ai/dsh-jobs':
-        specifier: '*'
+        specifier: ^0.0.1-rc.3
         version: 0.0.1-rc.3(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-agent@0.1.0-rc.6(b7ee0e09981eec7451624f4c595e37be))(@deepseek-ai/dsh-brand@0.0.1-rc.5(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.0.1-rc.5(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-invariants@0.0.1-rc.5(@deepseek-ai/cordis@4.0.1))(@deepseek-ai/dsh-session@0.0.1-rc.5(a1af7f9a9d47a57c1d5e67b662bfe08f))
       '@deepseek-ai/dsh-tools':
-        specifier: '*'
+        specifier: ^0.0.1-rc.1
         version: 0.0.1-rc.1(35fe7acf3332c7517b2a9aedfde6e4c3)
       '@deepseek-ai/dsh-typert-protocol':
-        specifier: '*'
+        specifier: ^0.1.0-rc.6
         version: 0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.0.1-rc.5(@deepseek-ai/cordis@4.0.1))
       '@deepseek-ai/schemastery':
         specifier: '*'

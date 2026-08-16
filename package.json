@@ -32,8 +32,11 @@
   "scripts": {
     "build": "tsdown && tsdown --config tsdown.web.config.ts",
     "gen:types": "node scripts/gen-types.mjs",
+    "gen:types:check": "node scripts/gen-types.mjs --check",
     "test": "pnpm build && node --experimental-transform-types --test \"test/unit/*.test.ts\"",
+    "test:integration": "pnpm build && node test/integration/run.mjs && node test/integration/extended.mjs && node test/integration/events.mjs && node test/integration/close-rename.mjs",
     "typecheck": "tsc --noEmit",
+    "quality": "pnpm typecheck && pnpm gen:types:check && pnpm test",
     "prepare": "pnpm build"
   },
   "dsh": {
@@ -49,10 +52,10 @@
   },
   "dependencies": {
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-agent": "*",
-    "@deepseek-ai/dsh-jobs": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-jobs": "^0.0.1-rc.3",
+    "@deepseek-ai/dsh-tools": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
     "@deepseek-ai/schemastery": "*"
   },
   "devDependencies": {

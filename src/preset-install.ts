@@ -14,7 +14,14 @@ const PRESET_ID = 'herdr'
  *   `<file>.herdr-bak-<ts>` 再覆盖，避免用户自定义配置被静默丢弃。
  * 返回 preset 目录；无法定位源时返回 null。
  */
-export function ensureHerdrPreset(dshHome?: string): string | null {
+export interface PresetInstallLogger {
+  info(msg: string, ...args: unknown[]): void
+  warn(msg: string, ...args: unknown[]): void
+}
+
+/** 无 ctx 的模块级安装助手；可传入 logger（CA-017），缺省回退 console。 */
+export function ensureHerdrPreset(dshHome?: string, logger?: PresetInstallLogger): string | null {
+  const log = logger ?? { info: console.log.bind(console), warn: console.warn.bind(console) }
   const home = dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh')
   const target = join(home, '.agent-presets', PRESET_ID)
 
@@ -38,15 +45,15 @@ export function ensureHerdrPreset(dshHome?: string): string | null {
         if (same) continue
         // 用户可能改过旧文件：备份后再覆盖，配置不静默丢失
         renameSync(to, `${to}.herdr-bak-${Date.now()}`)
-        console.log(`[dsh-plugin-herdr] preset "${PRESET_ID}": backed up outdated ${f} and updated`)
+        log.info('preset "%s": backed up outdated %s and updated', PRESET_ID, f)
       }
       copyFileSync(from, to)
       installed = true
     }
-    if (installed) console.log(`[dsh-plugin-herdr] preset "${PRESET_ID}" installed at ${target} (herdr 模式开关已可用)`)
+    if (installed) log.info('preset "%s" installed at %s (herdr 模式开关已可用)', PRESET_ID, target)
     return target
   } catch (err) {
-    console.log(`[dsh-plugin-herdr] preset install failed: ${err instanceof Error ? err.message : String(err)}`)
+    log.warn('preset install failed: %s', err instanceof Error ? err.message : String(err))
     return null
   }
 }

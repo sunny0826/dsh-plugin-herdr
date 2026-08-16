@@ -4,12 +4,14 @@ Herdr control-plane plugin for DeepSeek Harness (DSH): observe and drive
 [Herdr](https://herdr.dev) — a terminal workspace manager for AI coding agents —
 from DSH sessions.
 
-- **14 `herdr_*` tools**: snapshot, agent list, pane run/read/split/send-keys,
-  agent wait/prompt/explain/send-keys, workspace create, pane layout, layout
-  apply, notification — over the Herdr CLI or the socket protocol.
-- **Herdr panel**: a workspace → pane list view in the conversation page
-  (built on the DSH design system), plus a right-side pane status list with
-  drag & edge snap and a collapsed logo button.
+- **18 `herdr_*` tools**: snapshot, agent list, pane run/read/split/send-keys,
+  agent wait/prompt/explain/send-keys, workspace create/close/rename, pane
+  close/rename, pane layout, layout apply, notification — over the Herdr CLI or
+  the socket protocol.
+- **Herdr panel**: a two-column pane-card grid with drag-to-reorder, per-pane
+  log preview/expand, rename and guarded close (confirm + self-pane refusal),
+  plus a project-directory filter toggle — and a right-side floating pane status
+  list with drag & edge snap and a collapsed logo button.
 - **herdr mode (agent preset)**: create a session in "Herdr 模式" — the session
   binds to its own Herdr pane and reports working/idle state to the Herdr
   sidebar.
@@ -53,6 +55,21 @@ picker (copied to `$DSH_HOME/.agent-presets/herdr/` on first load).
 | `events.enabled` | boolean | `false` | subscribe to Herdr events (socket transport) |
 | `events.maxReconnectMs` | number | 30000 | event subscription reconnect cap |
 | `reportState` | boolean | `true` | report DSH→Herdr state inside a pane (`HERDR_ENV`) |
+| `projectRoot` | string | – | project directory for panel filtering; defaults to `process.cwd()` (one workspace-root per DSH web instance) |
+
+CLI/socket transport limits (CA-014):
+
+- Per-command output is capped at 1 MiB per stream on both transports;
+  `pane_read`/`pane_run` report `truncated: true` when the cap is hit (socket
+  additionally surfaces the server-reported `truncated` flag).
+- CLI commands are spawned as a detached process group on POSIX; on
+  timeout/abort the whole process tree is killed (no leftover `sh -c`
+  children). Windows only terminates the direct child.
+
+Platform support: the CLI transport (`sh -c` wrapping, process groups,
+Unix-domain sockets) is **POSIX-only**; on Windows the plugin does not guess a
+named-pipe socket path and falls back to the CLI transport, which is not
+supported — use POSIX (macOS/Linux) for full functionality.
 
 Example patch (`cordis.patch.yml`):
 
@@ -77,6 +94,10 @@ Example patch (`cordis.patch.yml`):
 | `herdr_pane_run` | Run a shell command in a pane; waits for output to settle |
 | `herdr_agent_wait` | Wait for an agent to reach a state |
 | `herdr_workspace_create` | Create a workspace |
+| `herdr_workspace_close` | Close a workspace and all its panes — **destructive** |
+| `herdr_pane_close` | Close a pane — **destructive** |
+| `herdr_workspace_rename` | Rename a workspace (`workspace_id`, non-empty `label` ≤64 chars) |
+| `herdr_pane_rename` | Rename a pane (`pane_id`, `label` may be empty/null to clear the name) |
 | `herdr_pane_split` | Split a pane (direction/ratio/cwd/env) |
 | `herdr_pane_send_keys` | Send key presses to a pane |
 | `herdr_pane_read` | Read pane terminal output (visible/recent) |
@@ -97,13 +118,47 @@ Select **Herdr 模式** when creating a session. The session:
 - closes its owned pane when the session is disposed (fixed bindings are only
   released).
 
+## Herdr panel interactions
+
+The conversation-page Herdr tab and the floating right-hand pane list share one
+status source (`/herdr-status`), so scope and filtering behave identically
+(v2, CA-019..024):
+
+- **Project filtering**: only workspaces under the project directory (config
+  `projectRoot`, default `process.cwd()`) are shown; a "仅本项目
+  （matched/total）" hint appears when filtered, with a "显示全部/仅本项目"
+  toolbar toggle (`?scope=all`) whose choice is kept in localStorage key
+  `herdr:show-all-ws`. On empty project scope the panel offers "显示全部".
+- **Two-column cards + drag sort**: panes render as a two-column grid; dragging
+  the ⋮⋮ handle reorders within a workspace. Order persists in localStorage key
+  `herdr:pane-order:<workspace_id>`. Cross-workspace drags are ignored
+  (one-off "同 workspace 内排序" hint). Reacts to narrow viewports (<640px →
+  single column).
+- **Log preview/expand**: card body shows the latest lines with a fade-out;
+  "展开" gives an independently scrolling log that auto-follows a working agent
+  and offers "复制" (full output).
+- **Rename**: ✎ or double-click turns the pane/workspace name into an inline
+  input (≤64 chars); clearing the pane name removes it (falls back to title).
+  Renames are persisted by herdr server.
+- **Close**: ✕ (hover) opens a confirm dialog; a workspace close shows its pane
+  count. The dialog and the server both refuse closing the pane that hosts the
+  current session (self-pane).
+
 ## Safety boundary
 
 - All actions are local to your machine; the plugin shells out to the `herdr`
   CLI or talks to the local socket.
 - The panel endpoints (`/herdr-status`, `/herdr-start`,
-  `/herdr-session-pane`) are plain HTTP on the local web server — do not
-  expose the DSH web port publicly.
+  `/herdr-session-pane`, `/herdr-close`, `/herdr-rename`) are plain HTTP on
+  the local web server — do not expose the DSH web port publicly. They are
+  additionally guarded (CA-007):
+  - strict methods: `/herdr-status` & `/herdr-session-pane` are GET-only,
+    `/herdr-start`, `/herdr-close` & `/herdr-rename` are POST-only
+    (otherwise `405 + Allow`);
+  - local-context only: `Host` must be `localhost`/`127.0.0.1`/`::1`
+    (DNS-rebinding defense); cross-site `Origin` or `Sec-Fetch-Site: cross-site`
+    is rejected with `403` (CSRF defense) — unauthorized requests cannot start
+    the herdr server or read terminal/topology data.
 - State reporting is display-only: it does not affect Herdr's own wait or
   notification semantics.
 
@@ -121,6 +176,17 @@ Select **Herdr 模式** when creating a session. The session:
 ```sh
 pnpm install
 pnpm build        # tsdown (node entries + web client bundle)
+pnpm quality      # CA-010 质量门：typecheck + gen-types 漂移检查 + unit tests
 pnpm test         # unit tests (node --test)
+pnpm test:integration  # build + run.mjs + extended.mjs + events.mjs + close-rename.mjs (真实 herdr，前置不满足时 SKIP)
 pnpm gen:types    # regenerate protocol types from the herdr schema fixture
 ```
+
+## Compatibility
+
+- Verified against **herdr 0.8.0 / protocol 19 / schema_version 1** (the
+  fixture `test/fixtures/herdr-api.schema.json` matches live `herdr api schema`;
+  `pnpm gen:types:check` fails on drift).
+- Acceptance status is tracked in `TASKS.md` (三态：实现 / 自动验证 / 人工验证);
+  real-browser visual items (M0-06 HMR, M1-10, M3-05, M7/M10-M12) remain
+  manual pending — automated coverage lives at the logic layer (CA-016).

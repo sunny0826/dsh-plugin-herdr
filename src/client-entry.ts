@@ -3,6 +3,7 @@ import { CliHerdrClient } from './client/cli.ts'
 import { SocketHerdrClient } from './client/socket.ts'
 import { resolveCliPath, resolveSession, resolveSocketPath, type Config } from './config.ts'
 import { ensureHerdrPreset } from './preset-install.ts'
+import { createLogger } from './log.ts'
 
 // cordis 通过模块导出的 Config 校验插件配置并填充默认值
 export { Config } from './config.ts'
@@ -26,7 +27,7 @@ export const name = 'dsh-plugin-herdr-client'
  */
 export function apply(ctx: Context, config: Config) {
   // herdr 模式 preset：复制到 $DSH_HOME/.agent-presets/（新建会话的模式选择器可见）
-  ensureHerdrPreset()
+  ensureHerdrPreset(undefined, createLogger(ctx, 'preset'))
 
   if (config.transport === 'socket') {
     const socketPath = resolveSocketPath(config)

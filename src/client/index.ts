@@ -1,5 +1,12 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
-import type { AgentStatus } from './types.js'
+import type {
+  AgentStatus,
+  PaneInfo,
+  PaneLayoutSnapshot,
+  SessionSnapshot,
+  TabInfo,
+  WorkspaceInfo,
+} from './types.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -13,18 +20,16 @@ export type { AgentStatus, PaneAgentState, SplitDirection, ReadSource } from './
 // 领域类型（字段名对齐 Herdr 协议 snake_case，便于对照 herdr api schema）
 // ---------------------------------------------------------------------------
 
-/** session.snapshot 的 result.snapshot 结构（核心字段 + 宽松扩展）。 */
-export interface HerdrSnapshot {
+/**
+ * session.snapshot 的 result.snapshot 结构。
+ * CA-004：panes/workspaces/tabs/layouts 由 fixture 生成类型（替代 unknown[]）。
+ */
+export interface HerdrSnapshot extends Omit<SessionSnapshot, 'agents' | 'panes' | 'workspaces' | 'tabs' | 'layouts'> {
   agents: HerdrAgentInfo[]
-  focused_pane_id: string | null
-  focused_tab_id: string | null
-  focused_workspace_id: string | null
-  layouts: unknown[]
-  panes: unknown[]
-  protocol: number
-  tabs: unknown[]
-  version: string
-  workspaces: unknown[]
+  panes: PaneInfo[]
+  workspaces: WorkspaceInfo[]
+  tabs: TabInfo[]
+  layouts: PaneLayoutSnapshot[]
 }
 
 /** pane list / split 返回的 pane 记录（核心字段）。 */
@@ -45,9 +50,9 @@ export interface HerdrAgentInfo {
   pane_id?: string
   workspace_id?: string
   tab_id?: string
-  agent?: string
+  agent?: string | null
   status?: AgentStatus
-  message?: string
+  message?: string | null
   foreground_cwd?: string | null
   [key: string]: unknown
 }
@@ -179,6 +184,19 @@ export interface ReportAgentRequest {
   message?: string
 }
 
+/** pane.report_metadata 载荷（CA-006：title/tokens/ttl；显示性元数据）。 */
+export interface ReportMetadataRequest {
+  pane_id: string
+  source: string
+  agent?: string
+  /** 侧边栏标题。 */
+  title?: string | null
+  /** 令牌（如 { model: 'claude-4' }）；值为 null 表示清除该令牌。 */
+  tokens?: Record<string, string | null>
+  /** 元数据存活时长（ms）；过期后侧边栏清除。TTL 刷新据此周期重报。 */
+  ttl_ms?: number | null
+}
+
 export interface ClearAgentAuthorityRequest {
   pane_id: string
   source?: string
@@ -217,8 +235,14 @@ export abstract class HerdrClient extends Service {
   abstract paneSplit(req: PaneSplitRequest): Promise<{ pane_id: string }>
   /** 关闭 pane（会话专属 pane 的清理；pane 内进程随之终止）。 */
   abstract paneClose(paneId: string): Promise<void>
+  /** 关闭 workspace（含其中所有 pane；T01-E：不存在时报 workspace_not_found）。 */
+  abstract workspaceClose(workspaceId: string): Promise<void>
+  /** 重命名 workspace（多词标签由 CLI join 空格；T01-D）。 */
+  abstract workspaceRename(workspaceId: string, label: string): Promise<void>
+  /** 重命名 pane；label 为空（null/空白）走 --clear 清除名称（T01-A/B）。 */
+  abstract paneRename(paneId: string, label: string | null): Promise<void>
   abstract paneSendKeys(req: PaneSendKeysRequest): Promise<void>
-  abstract paneRead(req: PaneReadRequest): Promise<{ text: string }>
+  abstract paneRead(req: PaneReadRequest): Promise<{ text: string; truncated: boolean }>
   abstract paneLayout(req: PaneLayoutRequest): Promise<unknown>
   abstract layoutApply(req: LayoutApplyRequest): Promise<unknown>
   abstract agentPrompt(req: AgentPromptRequest, signal: AbortSignal): Promise<AgentPromptResult>
@@ -230,6 +254,8 @@ export abstract class HerdrClient extends Service {
 
   /** 上报 pane 的 agent 生命周期状态（显示性；PaneAgentState 无 done，done 映射 idle）。 */
   abstract reportAgent(req: ReportAgentRequest): Promise<void>
+  /** 上报 pane 的显示性元数据（title/tokens/ttl_ms；CA-006 M3-03）。 */
+  abstract reportMetadata(req: ReportMetadataRequest): Promise<void>
   /** 释放本来源对该 pane 的 agent 状态 authority（卸载清理用）。 */
   abstract clearAgentAuthority(req: ClearAgentAuthorityRequest): Promise<void>
 }

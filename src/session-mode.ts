@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import type { PaneReportState } from './client/index.ts'
 import { getBindingRegistry } from './binding-registry.ts'
+import { createLogger, createRateLimiter, errText } from './log.ts'
 // 加载 dsh-agent 对 Cordis Events 的声明合并（agent/created、agent/disposed、
 // agent/request、agent/turn-stopping 带 agent 载体与 payload.agent）
 import type {} from '@deepseek-ai/dsh-agent'
@@ -48,6 +49,9 @@ export function apply(ctx: Context, config: Config) {
   const source = config.source
   const agentName = 'dsh'
   const registry = getBindingRegistry()
+  const logger = createLogger(ctx, 'session-mode')
+  // CA-017：会话级错误限流（10s/key）
+  const rateLimited = createRateLimiter(10_000)
 
   interface Binding {
     paneId: string
@@ -55,6 +59,11 @@ export function apply(ctx: Context, config: Config) {
   }
   // agent id（= session id）→ 绑定 pane
   const bindings = new Map<string, Binding>()
+  // CA-013：在途 bind 与已 dispose 的 agent（bind/dispose 竞态防护）
+  const pending = new Set<string>()
+  const disposedAgents = new Set<string>()
+  // CA-013：在途清理（可观测；测试与 HMR 卸载可等待）
+  const pendingCleanups = new Set<Promise<void>>()
 
   const report = (agentId: string, state: PaneReportState, message?: string) => {
     const binding = bindings.get(agentId)
@@ -62,40 +71,70 @@ export function apply(ctx: Context, config: Config) {
     void ctx.herdr
       .reportAgent({ pane_id: binding.paneId, source, agent: agentName, state, message })
       .catch(err => {
-        console.log(`[dsh-plugin-herdr] session-mode: report-agent failed for ${binding.paneId}: ${err instanceof Error ? err.message : String(err)}`)
+        rateLimited('report-agent', () => logger.warn('report-agent failed for %s: %s', binding.paneId, errText(err)))
       })
   }
 
-  /** 为 agent 绑定 pane（幂等；失败返回 false）。 */
-  const bind = async (agentId: string): Promise<boolean> => {
-    if (bindings.has(agentId)) return true
+  /** 会话专属 pane：关闭（避免恢复/重启累积空 pane）；固定绑定：仅释放 authority。 */
+  const cleanupPane = (binding: Binding): Promise<void> => {
+    const action = binding.created
+      ? ctx.herdr.paneClose(binding.paneId).catch(() =>
+          // 关闭失败（pane 已不存在）可忽略；兜底释放 authority
+          ctx.herdr.clearAgentAuthority({ pane_id: binding.paneId, source, agent: agentName }).catch(() => {}))
+      : ctx.herdr.clearAgentAuthority({ pane_id: binding.paneId, source, agent: agentName }).catch(() => {})
+    const tracked = Promise.resolve(action)
+    pendingCleanups.add(tracked)
+    void tracked.finally(() => pendingCleanups.delete(tracked))
+    return tracked
+  }
+
+  /** 为 agent 绑定 pane（幂等；CA-013：bind 完成前 agent 已 dispose 则不注册并清理已建 pane）。 */
+  const bind = async (agentId: string): Promise<Binding | null> => {
+    if (bindings.has(agentId)) return bindings.get(agentId)!
     const fixed = (config.paneId ?? '').trim()
     if (fixed) {
-      bindings.set(agentId, { paneId: fixed, created: false })
+      const b: Binding = { paneId: fixed, created: false }
+      bindings.set(agentId, b)
       registry.set(agentId, { pane_id: fixed, created: false })
-      return true
+      return b
     }
+    pending.add(agentId)
+    let created: Binding | null = null
     try {
       const snap = await ctx.herdr.snapshot()
       if (snap.focused_pane_id) {
         const { pane_id } = await ctx.herdr.paneSplit({ pane_id: snap.focused_pane_id, direction: 'right' })
-        bindings.set(agentId, { paneId: pane_id, created: true })
-        registry.set(agentId, { pane_id, created: true })
-        console.log(`[dsh-plugin-herdr] session-mode: agent ${agentId} bound to new pane ${pane_id} (split)`)
-        return true
+        created = { paneId: pane_id, created: true }
+        logger.info('agent %s bound to new pane %s (split)', agentId, pane_id)
+      } else {
+        const ws = await ctx.herdr.workspaceCreate({ label: config.label, cwd: config.cwd })
+        if (ws.pane_id) {
+          created = { paneId: ws.pane_id, created: true }
+          logger.info('agent %s bound to new pane %s (workspace %s)', agentId, ws.pane_id, ws.workspace_id)
+        } else {
+          logger.warn('no pane for agent %s (no focused pane, workspace.create returned no root pane)', agentId)
+        }
       }
-      const ws = await ctx.herdr.workspaceCreate({ label: config.label, cwd: config.cwd })
-      if (ws.pane_id) {
-        bindings.set(agentId, { paneId: ws.pane_id, created: true })
-        registry.set(agentId, { pane_id: ws.pane_id, created: true })
-        console.log(`[dsh-plugin-herdr] session-mode: agent ${agentId} bound to new pane ${ws.pane_id} (workspace ${ws.workspace_id})`)
-        return true
+      if (!created) return null
+      // CA-013：异步 bind 期间 agent 已被 dispose → 不注册/不上报，立即回收已创建的 pane
+      if (disposedAgents.has(agentId)) {
+        logger.warn('agent %s disposed during bind; closing pane %s', agentId, created.paneId)
+        // codex review P2：竞态分支处理完 dispose 后必须清除标记，避免 session id 复用误关新 pane
+        disposedAgents.delete(agentId)
+        void cleanupPane(created)
+        return null
       }
-      console.log(`[dsh-plugin-herdr] session-mode: no pane for agent ${agentId} (no focused pane, workspace.create returned no root pane)`)
-      return false
+      bindings.set(agentId, created)
+      registry.set(agentId, { pane_id: created.paneId, created: created.created })
+      return created
     } catch (err) {
-      console.log(`[dsh-plugin-herdr] session-mode: pane bind failed for agent ${agentId}: ${err instanceof Error ? err.message : String(err)}`)
-      return false
+      logger.warn('pane bind failed for agent %s: %s', agentId, errText(err))
+      return null
+    } finally {
+      pending.delete(agentId)
+      // codex review P2：bind 失败/未创建时若 dispose 在途，其意图已由本次 bind 消费，
+      // 一并清除标记（竞态分支成功路径已在上面删除，这里兜底失败路径）
+      if (disposedAgents.has(agentId)) disposedAgents.delete(agentId)
     }
   }
 
@@ -103,8 +142,8 @@ export function apply(ctx: Context, config: Config) {
   // 这里用宽松类型桥访问（与 state-report.ts 一致）
   const offCreated = ctx.on('agent/created', (payload: any) => {
     const agentId = payload.agent.id
-    void bind(agentId).then(ok => {
-      if (ok) report(agentId, 'idle', 'herdr session ready')
+    void bind(agentId).then(binding => {
+      if (binding) report(agentId, 'idle', 'herdr session ready')
     })
   })
 
@@ -121,26 +160,18 @@ export function apply(ctx: Context, config: Config) {
 
   const offDisposed = ctx.on('agent/disposed', (payload: any) => {
     const agentId = payload.agent.id
+    // CA-013：标记已 dispose；bind 在途时由其完成路径自清理（不遗留 pane/registry）
+    disposedAgents.add(agentId)
+    if (pending.has(agentId)) return
     const binding = bindings.get(agentId)
+    disposedAgents.delete(agentId)
     if (!binding) return
     bindings.delete(agentId)
     registry.delete(agentId)
-    cleanupPane(binding)
+    void cleanupPane(binding)
   })
 
-  /** 会话专属 pane：关闭（避免恢复/重启累积空 pane）；固定绑定：仅释放 authority。 */
-  const cleanupPane = (binding: Binding) => {
-    if (binding.created) {
-      void ctx.herdr.paneClose(binding.paneId).catch(() => {
-        // 关闭失败（pane 已不存在）可忽略；兜底释放 authority
-        void ctx.herdr.clearAgentAuthority({ pane_id: binding.paneId, source, agent: agentName }).catch(() => {})
-      })
-    } else {
-      void ctx.herdr.clearAgentAuthority({ pane_id: binding.paneId, source, agent: agentName }).catch(() => {})
-    }
-  }
-
-  console.log('[dsh-plugin-herdr] session-mode active (herdr preset standing scope)')
+  logger.info('session-mode active (herdr preset standing scope)')
 
   ctx.effect(() => {
     return () => {
@@ -148,9 +179,13 @@ export function apply(ctx: Context, config: Config) {
       offRequest()
       offStopping()
       offDisposed()
-      for (const binding of bindings.values()) cleanupPane(binding)
+      // CA-013：只清理本实例拥有的 registry key（多 standing mount / HMR 重叠时不误删他人）
+      const ownedIds = [...bindings.keys()]
+      for (const binding of bindings.values()) void cleanupPane(binding)
       bindings.clear()
-      for (const id of [...registry.keys()]) registry.delete(id)
+      for (const id of ownedIds) registry.delete(id)
+      pending.clear()
+      disposedAgents.clear()
     }
   })
 }

@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import { createLogger } from './log.ts'
 import type { SkillRegistration } from '@deepseek-ai/dsh-skill'
 import { HERDR_SKILL_MD } from './herdr-skill.ts'
 
@@ -27,7 +28,7 @@ export function registerHerdrSkill(ctx: Context): () => void {
       source: 'runtime',
       provider: 'runtime',
     })
-    console.log('[dsh-plugin-herdr] skill "herdr" registered (v0.8.0 SKILL.md embedded)')
+    createLogger(ctx, 'skill').info('skill "herdr" registered (v0.8.0 SKILL.md embedded)')
   })
   return () => {
     off?.()

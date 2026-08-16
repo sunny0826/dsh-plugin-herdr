@@ -54,8 +54,8 @@ test('tools declare UI cards (presentCall)', async () => {
   const fiber = await ctx.plugin({ name: 'dsh-plugin-herdr', apply, inject: ['tools', 'herdr', 'jobs'] }, FULL_CONFIG)
   try {
     const names = registered.map(r => r.name)
-    // CLI transport：layout_apply 不注册（socket only）
-    assert.equal(names.length, 13, 'all tools registered: ' + names.join(','))
+    // CLI transport：layout_apply 不注册（socket only）；v2 关闭/重命名 4 工具在 CLI 注册
+    assert.equal(names.length, 17, 'all tools registered: ' + names.join(','))
     assert.ok(!names.includes('herdr_layout_apply'), 'layout_apply skipped on CLI transport')
     const paneRun = registered.find(r => r.name === 'herdr_pane_run')
     assert.ok(paneRun?.presentCall, 'herdr_pane_run should declare presentCall')

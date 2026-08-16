@@ -5,6 +5,10 @@ import { execFileSync } from 'node:child_process'
 import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../../lib/index.mjs'
 import { apply as applyClient } from '../../lib/client-entry.mjs'
+import { assertPreflight, ensureWorkspace } from './preflight.mjs'
+
+// CA-009：前置条件（herdr CLI + lib 构建 + server running）；不满足 → 明确 SKIP
+assertPreflight()
 
 const CONFIG = {
   cliPath: 'herdr',
@@ -38,8 +42,12 @@ const createdPanes = new Set()
 const closePane = (id) => {
   try { execFileSync('herdr', ['pane', 'close', id], { encoding: 'utf8' }) } catch { /* ignore */ }
 }
+let closeWorkspace = () => {}
 
 try {
+  // 全新 server 没有默认 workspace（CI runner 场景）：先确保存在
+  closeWorkspace = await ensureWorkspace(ctx.herdr)
+
   // 1) snapshot：返回非空 workspace 列表（§14.2 第 1 项）
   const snap = await ctx.herdr.snapshot()
   await check('snapshot returns workspaces', () => {
@@ -95,6 +103,7 @@ try {
   })
 } finally {
   for (const id of createdPanes) closePane(id)
+  closeWorkspace()
   await fiber.dispose()
   await clientFiber.dispose()
   console.log(failures === 0 ? 'ALL INTEGRATION CHECKS PASSED' : `${failures} CHECK(S) FAILED`)

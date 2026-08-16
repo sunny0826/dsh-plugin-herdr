@@ -18,3 +18,13 @@ export function getBindingRegistry(): Map<string, HerdrSessionBinding> {
   const g = globalThis as Record<symbol, Map<string, HerdrSessionBinding> | undefined>
   return (g[KEY] ??= new Map())
 }
+
+/**
+ * 只读遍历全部已绑定 pane_id（去重，无绑定返回空数组）。
+ * 供 status.ts 的 self pane 豁免使用：无需知道"当前会话 agent id"，
+ * 只要某个 workspace 包含任一已绑定会话的 pane 就无条件保留。
+ * 纯遍历不改动 registry，不影响既有单测。
+ */
+export function getBoundPaneIds(): string[] {
+  return [...new Set([...getBindingRegistry().values()].map(b => b.pane_id))]
+}

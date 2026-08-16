@@ -62,7 +62,7 @@ export function registerPaneRun(ctx: Context, opts: PaneRunToolOptions) {
           },
         ],
       },
-      render: (args, value) => [{ type: 'text', text: renderRunResult(args as never, value as RunCommandResult) }],
+      render: (args, value) => [{ type: 'text', text: renderRunResult(args as { command: string }, value as RunCommandResult) }],
     },
     // UI 呈现（DESIGN.md §13）：terminal 卡片
     presentCall(args) {
@@ -99,7 +99,7 @@ export function registerPaneRun(ctx: Context, opts: PaneRunToolOptions) {
             owner: exec.agent,
             label: `herdr run: ${args.command}`,
             wait: signal => ctx.herdr.runCommand(request, signal),
-            render: result => renderRunResult(args as never, result),
+            render: result => renderRunResult(args as { command: string }, result),
           })
           return { kind: 'background' as const, jobId }
         }
