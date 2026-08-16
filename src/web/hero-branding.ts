@@ -26,6 +26,13 @@ export const HERDR_HERO_TEXT_PLAIN_EN = ' explore the unknown'
 export const HERDR_PRESET_NAME_ZH = 'Herdr 模式'
 export const HERDR_PRESET_NAME_EN = 'Herdr mode'
 
+/** herdr preset 介绍（description；同 name 的单字符串限制，全局文本替换补偿，
+ *  覆盖 hero 页 preset 菜单与设置页的 description 展示）。 */
+export const HERDR_PRESET_DESC_ZH =
+  '会话绑定 Herdr——本对话视为运行在 Herdr 中的 Agent，状态实时显示在 Herdr 侧边栏，优先使用 herdr 工具操作 workspace / pane / agent。'
+export const HERDR_PRESET_DESC_EN =
+  'Binds the session to Herdr: the conversation runs as an Agent inside Herdr, its status shows live in the Herdr sidebar, and herdr tools operate workspace / pane / agent.'
+
 /** 品牌紫 token（styles.ts CSS 变量引用；取值 = herdr.dev 官网 site.css 的 --spot 实测，design §4.1）。 */
 export const HERDR_BRAND_LIGHT = '#8839ef' // herdr.dev paper 模式
 export const HERDR_BRAND_DARK = '#cba6f7' // herdr.dev ink 模式
@@ -57,6 +64,7 @@ export function setHerdrLang(lang: string): void {
     el.setAttribute('aria-label', heroTextForLang())
   }
   patchPresetChip()
+  patchPresetDesc()
 }
 
 /** hero 页 preset 芯片英文适配：仅当芯片显示 herdr preset 名时替换文本节点
@@ -74,8 +82,36 @@ function patchPresetChip(): void {
           node.textContent = node.textContent.replace(HERDR_PRESET_NAME_EN, HERDR_PRESET_NAME_ZH)
         }
       }
-      void text
     }
+  }
+}
+
+/** preset 文案（name + description）英文适配：全局文本节点替换（TreeWalker），
+ *  覆盖 hero 页 preset 菜单（portal 渲染、不在 hero 根内）与设置页的展示；
+ *  替换可逆，React 重建后由 observer 补标。 */
+function patchPresetDesc(): void {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+  const targets: Text[] = []
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text
+    const text = node.textContent ?? ''
+    const en = herdrLang === 'en'
+    if (en
+      ? text.includes(HERDR_PRESET_DESC_ZH) || text.includes(HERDR_PRESET_NAME_ZH)
+      : text.includes(HERDR_PRESET_DESC_EN) || text.includes(HERDR_PRESET_NAME_EN)) {
+      targets.push(node)
+    }
+  }
+  for (const node of targets) {
+    let text = node.textContent ?? ''
+    if (herdrLang === 'en') {
+      text = text.replace(HERDR_PRESET_DESC_ZH, HERDR_PRESET_DESC_EN)
+        .replace(HERDR_PRESET_NAME_ZH, HERDR_PRESET_NAME_EN)
+    } else {
+      text = text.replace(HERDR_PRESET_DESC_EN, HERDR_PRESET_DESC_ZH)
+        .replace(HERDR_PRESET_NAME_EN, HERDR_PRESET_NAME_ZH)
+    }
+    node.textContent = text
   }
 }
 
@@ -120,6 +156,7 @@ export function startHeroBranding(): () => void {
   }
   patchHero()
   patchPresetChip()
+  patchPresetDesc()
   let raf = 0
   const observer = new MutationObserver(() => {
     if (raf) return
@@ -127,6 +164,7 @@ export function startHeroBranding(): () => void {
       raf = 0
       patchHero()
       patchPresetChip()
+      patchPresetDesc()
     })
   })
   observer.observe(document.body, {
