@@ -6,6 +6,7 @@
 import { useCallback, useRef, useState, type DragEvent } from 'react'
 import { Pill, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import { agentTheme, dotState, formatTime, validateLabel } from '../client-logic.ts'
+import { t, useHerdrLang } from './i18n.ts'
 import type { HerdrAgentStatus, HerdrPaneView } from './types.ts'
 import { PaneLog } from './pane-log.tsx'
 import { ConfirmDialog } from './confirm-dialog.tsx'
@@ -61,6 +62,8 @@ export function PaneCard({
    *  返回 promise：pending 期间禁用 input，reject 时在卡片内展示错误。 */
   onRename?: (label: string | null) => Promise<void> | void
 } & PaneCardDragProps) {
+  // 语言订阅：切语言时标题/按钮/确认文案跟随
+  void useHerdrLang()
   const status = agent?.status ?? pane.agent_status
   const muted = !status || status === 'unknown'
   const cwd = pane.cwd ?? pane.foreground_cwd ?? ''
@@ -165,7 +168,7 @@ export function PaneCard({
         <span
           className="herdr-pcard-handle"
           draggable
-          title="拖拽排序"
+          title={t('pane.drag')}
           onDragStart={onHandleDragStart}
           onDragEnd={onHandleDragEnd}
           onClick={e => e.stopPropagation()} // 拖动手柄不触发卡片展开
@@ -208,7 +211,7 @@ export function PaneCard({
           <button
             type="button"
             className="herdr-pcard-edit"
-            title="重命名"
+            title={t('pane.rename')}
             disabled={renaming || renameBusy}
             onClick={beginRename}
           >
@@ -218,7 +221,7 @@ export function PaneCard({
             <button
               type="button"
               className="herdr-pcard-close"
-              title="关闭 pane"
+              title={t('pane.close')}
               disabled={closeBusy}
               onClick={() => setConfirmClose(true)}
             >
@@ -238,24 +241,24 @@ export function PaneCard({
 
       <footer className="herdr-pcard-foot">
         <button className="herdr-pcard-foot-btn" type="button" onClick={onToggle}>
-          {open ? '收起' : '展开'}
+          {open ? t('pane.collapse') : t('pane.expand')}
         </button>
-        {!agent && !(pane.agent_status) ? <span className="herdr-pcard-empty">（无输出）</span> : null}
+        {!agent && !(pane.agent_status) ? <span className="herdr-pcard-empty">{t('pane.noOutput')}</span> : null}
         <button
           className="herdr-pcard-foot-btn"
           type="button"
           onClick={copy}
           disabled={!(agent?.output)}
         >
-          复制
+          {t('pane.copy')}
         </button>
       </footer>
 
       <ConfirmDialog
         visible={confirmClose}
         busy={closeBusy}
-        title={<>关闭 pane <code>{pane.pane_id}</code>？其内进程将终止</>}
-        confirmLabel="关闭"
+        title={t('pane.closeConfirm', { id: pane.pane_id })}
+        confirmLabel={t('pane.close')}
         onConfirm={() => { setConfirmClose(false); doClose() }}
         onCancel={() => setConfirmClose(false)}
       />

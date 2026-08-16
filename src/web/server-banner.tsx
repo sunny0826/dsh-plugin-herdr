@@ -2,10 +2,13 @@
 
 import type { ReactNode } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
+import { t, useHerdrLang } from './i18n.ts'
 import { useHerdrStart } from './store.ts'
 import type { HerdrStatusSnapshot } from './types.ts'
 
 export function HerdrServerBanner({ snap, error, onStarted }: { snap: HerdrStatusSnapshot | null; error: string | null; onStarted?: () => void }) {
+  // 语言订阅：切语言时状态文案/按钮跟随
+  void useHerdrLang()
   const { starting, startError, start } = useHerdrStart()
   const server = snap?.server
 
@@ -19,14 +22,14 @@ export function HerdrServerBanner({ snap, error, onStarted }: { snap: HerdrStatu
     body = (
       <>
         <span className="herdr-conn-dot" style={{ background: 'var(--dsw-alias-label-tertiary)' }} />
-        <span className="herdr-server-title">检查 herdr 服务…</span>
+        <span className="herdr-server-title">{t('banner.checking')}</span>
       </>
     )
   } else if (error) {
     body = (
       <>
         <span className="herdr-conn-dot bad" />
-        <span className="herdr-server-title">herdr 服务状态不可用</span>
+        <span className="herdr-server-title">{t('banner.unavailable')}</span>
         <span className="herdr-server-error">{error}</span>
       </>
     )
@@ -34,7 +37,7 @@ export function HerdrServerBanner({ snap, error, onStarted }: { snap: HerdrStatu
     body = (
       <>
         <span className="herdr-conn-dot ok" />
-        <span className="herdr-server-title">herdr 服务运行中</span>
+        <span className="herdr-server-title">{t('banner.running')}</span>
         <span className="herdr-server-meta">
           {server.version ? `v${server.version}` : ''}
           {server.session ? ` · ${server.session}` : ''}
@@ -46,9 +49,9 @@ export function HerdrServerBanner({ snap, error, onStarted }: { snap: HerdrStatu
     body = (
       <>
         <span className="herdr-conn-dot bad" />
-        <span className="herdr-server-title">herdr 服务未启动</span>
+        <span className="herdr-server-title">{t('banner.stopped')}</span>
         <Button variant="primary" size="sm" disabled={starting} onClick={() => void handleStart()}>
-          {starting ? '启动中…' : '启动 herdr'}
+          {starting ? t('view.starting') : t('banner.start')}
         </Button>
       </>
     )
@@ -63,7 +66,7 @@ export function HerdrServerBanner({ snap, error, onStarted }: { snap: HerdrStatu
   return (
     <div>
       <div className={bannerClass}>{body}</div>
-      {startError ? <div className="herdr-server-error">启动失败：{startError}</div> : null}
+      {startError ? <div className="herdr-server-error">{t('banner.startFailed', { error: startError })}</div> : null}
     </div>
   )
 }

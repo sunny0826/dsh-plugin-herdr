@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { applyPaneOrder, filterGroupsToSession, loadPaneOrder, reorderPanes, savePaneOrder, validateLabel } from '../client-logic.ts'
+import { t, useHerdrLang } from './i18n.ts'
 import { getPendingFocusPane, setPendingFocusPane, getSessionId } from './navigation.ts'
 import { fetchSelfPaneId } from './session-pane.ts'
 import { HerdrServerBanner } from './server-banner.tsx'
@@ -12,6 +13,8 @@ import { ConfirmDialog } from './confirm-dialog.tsx'
 
 // 会话页 header 状态胶囊（conversation.session.header.actions）
 export function HerdrHeaderPill() {
+  // 语言订阅：切语言时胶囊文案跟随
+  void useHerdrLang()
   const herdrMode = useHerdrMode()
   const { snap, refresh } = useHerdrStatus()
   const { starting, startError, start } = useHerdrStart()
@@ -24,7 +27,7 @@ export function HerdrHeaderPill() {
   return (
     <span className="herdr-pill">
       <span className={"herdr-conn-dot " + dotCls} />
-      {running ? 'herdr 运行中' : stopped ? 'herdr 未启动' : 'herdr …'}
+      {running ? t('view.running') : stopped ? t('view.stopped') : 'herdr …'}
       {stopped ? (
         <button
           disabled={starting}
@@ -34,7 +37,7 @@ export function HerdrHeaderPill() {
             })
           }}
         >
-          {starting ? '启动中…' : '启动'}
+          {starting ? t('view.starting') : t('view.start')}
         </button>
       ) : null}
       {startError ? <span className="herdr-server-error">{startError}</span> : null}
@@ -46,6 +49,8 @@ export function HerdrHeaderPill() {
 type ActionError = { message: string; key: number }
 
 export function HerdrView() {
+  // 语言订阅：切语言时工具栏/空态/确认文案跟随
+  void useHerdrLang()
   const herdrMode = useHerdrMode()
   const { snap, error, refresh } = useHerdrStatus()
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -309,7 +314,7 @@ export function HerdrView() {
     void e
     // 拖拽待结算（未同 ws 落位）：说明用户拖到了跨 workspace / 空白处且被忽略 → 一次性提示
     if (dragId && !droppedRef.current) {
-      setDropHint('拖拽仅支持同 workspace 内排序')
+      setDropHint(t('view.dropHint'))
       window.clearTimeout(dropHintTimerRef.current)
       dropHintTimerRef.current = window.setTimeout(() => setDropHint(null), 2000)
     }
@@ -383,7 +388,7 @@ export function HerdrView() {
         <button
           type="button"
           className="herdr-ws-edit"
-          title="重命名 workspace"
+          title={t('view.renameWorkspace')}
           disabled={wsOpBusy}
           onClick={e => { e.stopPropagation(); beginRenameWs(g) }}
         >
@@ -408,7 +413,7 @@ export function HerdrView() {
           {wsCount} workspaces · {paneCount} panes · {agentCount} agents
         </span>
         <span className="herdr-head-actions">
-          <Button variant="outline" size="sm" onClick={refresh}>刷新</Button>
+          <Button variant="outline" size="sm" onClick={refresh}>{t('view.refresh')}</Button>
         </span>
       </div>
 
@@ -416,7 +421,7 @@ export function HerdrView() {
       {actionError ? (
         <div className="herdr-action-error" key={actionError.key}>
           <span>{actionError.message}</span>
-          <button type="button" onClick={() => setActionError(null)} aria-label="关闭">✕</button>
+          <button type="button" onClick={() => setActionError(null)} aria-label={t('view.close')}>✕</button>
         </div>
       ) : null}
 
@@ -432,7 +437,7 @@ export function HerdrView() {
 
       {visibleGroups.length === 0 ? (
         <div className="herdr-empty">
-          {selfPaneId ? '本会话暂无 pane' : '正在获取本会话 pane…'}
+          {selfPaneId ? t('panel.noPane') : t('panel.fetchingPane')}
         </div>
       ) : (
         <div className="herdr-ws-list">
@@ -450,7 +455,7 @@ export function HerdrView() {
                   <button
                     type="button"
                     className="herdr-ws-close"
-                    title="关闭 workspace"
+                    title={t('view.closeWorkspace')}
                     onClick={e => {
                       e.stopPropagation()
                       if (wsOpBusy) return
@@ -490,8 +495,8 @@ export function HerdrView() {
       <ConfirmDialog
         visible={closingWs !== null}
         busy={wsOpBusy}
-        title={closingWs ? <>关闭 workspace <code>{closingWs.ws.label ?? closingWs.ws.workspace_id}</code> 及其 {closingWs.paneCount} 个 pane？</> : ''}
-        confirmLabel="关闭"
+        title={closingWs ? t('view.closeWorkspaceConfirm', { id: closingWs.ws.label ?? closingWs.ws.workspace_id, count: String(closingWs.paneCount) }) : ''}
+        confirmLabel={t('view.close')}
         onConfirm={() => void onConfirmCloseWs()}
         onCancel={() => { if (!wsOpBusy) setClosingWs(null) }}
       />

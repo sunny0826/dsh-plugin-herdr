@@ -5,6 +5,7 @@
 
 import type { ReactNode } from 'react'
 import type { MouseEvent } from 'react'
+import { t, useHerdrLang } from './i18n.ts'
 
 export interface ConfirmDialogProps {
   /** 是否显示。 */
@@ -23,12 +24,15 @@ export interface ConfirmDialogProps {
 export function ConfirmDialog({
   visible,
   title,
-  confirmLabel = '确定',
+  confirmLabel,
   busy = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  // 语言订阅：切语言时默认按钮文案跟随（显式传入的 confirmLabel 优先）
+  void useHerdrLang()
   if (!visible) return null
+  const confirmText = confirmLabel ?? t('dialog.confirm')
   return (
     <div
       className="herdr-mask"
@@ -39,9 +43,9 @@ export function ConfirmDialog({
       <div className="herdr-modal" role="dialog" aria-modal="true">
         <div className="herdr-modal-title">{title}</div>
         <div className="herdr-modal-actions">
-          <button className="herdr-modal-btn" type="button" onClick={onCancel} disabled={busy}>取消</button>
+          <button className="herdr-modal-btn" type="button" onClick={onCancel} disabled={busy}>{t('dialog.cancel')}</button>
           <button className="herdr-modal-btn herdr-modal-btn-danger" type="button" onClick={onConfirm} disabled={busy}>
-            {busy ? '处理中…' : confirmLabel}
+            {busy ? t('dialog.processing') : confirmText}
           </button>
         </div>
       </div>

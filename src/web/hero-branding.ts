@@ -45,20 +45,21 @@ const TEXT_CLASS = 'herdr-hero-text'
 const HEADLINE_CLASS = 'herdr-hero-headline'
 const LANG_ATTR = 'data-herdr-lang'
 
-/** 当前界面语言（locale 服务 active，经 setHerdrLang 同步；默认 zh）。 */
-let herdrLang = 'zh'
+// 语言状态单一事实源在 i18n.ts（locale 服务 active）；本模块读取并镜像到打标元素。
+import { getHerdrLang, setHerdrLang as setI18nLang } from './i18n.ts'
 
 /** 当前语言的完整文案（aria-label 用）。 */
 function heroTextForLang(): string {
-  return herdrLang === 'en' ? HERDR_HERO_TEXT_EN : HERDR_HERO_TEXT
+  return getHerdrLang() === 'en' ? HERDR_HERO_TEXT_EN : HERDR_HERO_TEXT
 }
 
 /** 同步界面语言（app.tsx 订阅 locale 服务调用）；已标记元素立即刷新。 */
 export function setHerdrLang(lang: string): void {
-  herdrLang = lang === 'en' ? 'en' : 'zh'
+  setI18nLang(lang)
   if (typeof document === 'undefined') return
+  const active = getHerdrLang()
   for (const el of Array.from(document.querySelectorAll('.' + TEXT_CLASS))) {
-    el.setAttribute(LANG_ATTR, herdrLang)
+    el.setAttribute(LANG_ATTR, active)
   }
   for (const el of Array.from(document.querySelectorAll('.' + HEADLINE_CLASS))) {
     el.setAttribute('aria-label', heroTextForLang())
@@ -76,9 +77,9 @@ function patchPresetChip(): void {
       const text = (btn.textContent ?? '').trim()
       for (const node of Array.from(btn.childNodes)) {
         if (node.nodeType !== Node.TEXT_NODE || node.textContent === null) continue
-        if (herdrLang === 'en' && node.textContent.includes(HERDR_PRESET_NAME_ZH)) {
+        if (getHerdrLang() === 'en' && node.textContent.includes(HERDR_PRESET_NAME_ZH)) {
           node.textContent = node.textContent.replace(HERDR_PRESET_NAME_ZH, HERDR_PRESET_NAME_EN)
-        } else if (herdrLang !== 'en' && node.textContent.includes(HERDR_PRESET_NAME_EN)) {
+        } else if (getHerdrLang() !== 'en' && node.textContent.includes(HERDR_PRESET_NAME_EN)) {
           node.textContent = node.textContent.replace(HERDR_PRESET_NAME_EN, HERDR_PRESET_NAME_ZH)
         }
       }
@@ -95,7 +96,7 @@ function patchPresetDesc(): void {
   while (walker.nextNode()) {
     const node = walker.currentNode as Text
     const text = node.textContent ?? ''
-    const en = herdrLang === 'en'
+    const en = getHerdrLang() === 'en'
     if (en
       ? text.includes(HERDR_PRESET_DESC_ZH) || text.includes(HERDR_PRESET_NAME_ZH)
       : text.includes(HERDR_PRESET_DESC_EN) || text.includes(HERDR_PRESET_NAME_EN)) {
@@ -104,7 +105,7 @@ function patchPresetDesc(): void {
   }
   for (const node of targets) {
     let text = node.textContent ?? ''
-    if (herdrLang === 'en') {
+    if (getHerdrLang() === 'en') {
       text = text.replace(HERDR_PRESET_DESC_ZH, HERDR_PRESET_DESC_EN)
         .replace(HERDR_PRESET_NAME_ZH, HERDR_PRESET_NAME_EN)
     } else {
@@ -134,7 +135,7 @@ function patchHero(): void {
     if (!(fishSeat instanceof HTMLElement) || !(headline instanceof HTMLElement)) continue
     fishSeat.classList.add(FISH_CLASS)
     headline.classList.add(HEADLINE_CLASS)
-    headline.setAttribute(LANG_ATTR, herdrLang)
+    headline.setAttribute(LANG_ATTR, getHerdrLang())
     if (!headline.getAttribute('aria-label')) headline.setAttribute('aria-label', heroTextForLang())
     // 标题文本 span：fish 座位的下一个兄弟（DOM 顺序固定：fish 座位、标题文本、预览徽章）；
     // 回退：共同父容器内第一个「含直接文本节点且无 svg 后代」的元素
@@ -144,7 +145,7 @@ function patchHero(): void {
     }
     if (textEl instanceof HTMLElement) {
       textEl.classList.add(TEXT_CLASS)
-      textEl.setAttribute(LANG_ATTR, herdrLang)
+      textEl.setAttribute(LANG_ATTR, getHerdrLang())
     }
   }
 }

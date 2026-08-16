@@ -7,10 +7,10 @@ export function registerWorkspaceCreate(ctx: Context) {
   ctx.tools.register(defineTool({
     name: 'herdr_workspace_create',
     description:
-      'Create a new Herdr workspace. In herdr 模式 this session already owns a dedicated ' +
+      'Create a new Herdr workspace. In herdr mode this session already owns a dedicated ' +
       'workspace (created in the project directory at session start) and every pane it creates ' +
       'lives there — creating another workspace is refused so all panes stay in the session ' +
-      'workspace. Outside herdr 模式 (no bound pane) this works normally.',
+      'workspace. Outside herdr mode (no bound pane) this works normally.',
     parameters: {
       cwd: { type: 'string', description: 'Working directory for the workspace (default: current)' },
       label: { type: 'string', description: 'Workspace label shown in the sidebar' },

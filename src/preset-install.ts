@@ -50,7 +50,7 @@ export function ensureHerdrPreset(dshHome?: string, logger?: PresetInstallLogger
       copyFileSync(from, to)
       installed = true
     }
-    if (installed) log.info('preset "%s" installed at %s (herdr 模式开关已可用)', PRESET_ID, target)
+    if (installed) log.info('preset "%s" installed at %s (herdr mode toggle available)', PRESET_ID, target)
     return target
   } catch (err) {
     log.warn('preset install failed: %s', err instanceof Error ? err.message : String(err))
