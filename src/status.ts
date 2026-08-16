@@ -2,6 +2,8 @@ import { execFile, spawn } from 'node:child_process'
 import type { Context } from '@deepseek-ai/cordis'
 import type { HerdrClient } from './client/index.ts'
 import { createLogger, createRateLimiter, errText } from './log.ts'
+import { isPathWithinProject } from './paths.ts'
+import { getBoundPaneIds } from './binding-registry.ts'
 
 /** 面板展示的单个 agent 状态块（wire JSON，客户端直接消费）。 */
 export interface HerdrAgentStatus {
@@ -20,6 +22,8 @@ export interface HerdrWorkspaceView {
   workspace_id: string
   label?: string
   active_tab_id?: string
+  /** worktree.checkout_path（幂等筛选的第 2 判据，§7.2）。 */
+  checkout_path?: string
 }
 
 /** tab 拓扑。 */
@@ -37,6 +41,7 @@ export interface HerdrPaneView {
   workspace_id: string
   tab_id?: string
   title?: string
+  label?: string
   cwd?: string
   foreground_cwd?: string
   focused: boolean
@@ -48,6 +53,18 @@ export interface HerdrTopology {
   workspaces: HerdrWorkspaceView[]
   tabs: HerdrTabView[]
   panes: HerdrPaneView[]
+}
+
+/** 看板目录过滤元数据（design-v2 §7.3）。matched/total 以全量为口径，与 scope 无关。 */
+export interface HerdrFilterInfo {
+  /** 判定的项目根（缺省 process.cwd()）。 */
+  project_root: string
+  /** 留下的 workspace 数。 */
+  matched: number
+  /** 全部 workspace 数。 */
+  total: number
+  /** 被剔除的 workspace_id 列表。 */
+  hidden_workspaces: string[]
 }
 
 
@@ -74,6 +91,8 @@ export interface HerdrStatusSnapshot {
   /** workspace / tab / pane 拓扑（列表展示）。 */
   topology: HerdrTopology
   /** CA-012：最近一次轮询错误（诊断；null = 最近一轮无错误）。 */
+  /** 目录过滤元数据（§7.3）。 */
+  filter: HerdrFilterInfo
   last_error: string | null
   /** CA-012：数据是否可能过期（距最近一次成功轮询超过 3×pollIntervalMs，或从未成功）。 */
   stale: boolean
@@ -212,6 +231,60 @@ export function comparePaneId(a: string, b: string): number {
 const errMsg = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
 /**
+ * 项目目录过滤（design-v2 §7.2，纯函数，可单测）。
+ * workspace 命中条件（任一）：worktree.checkout_path 在项目内 或 任一 pane 的
+ * cwd/foreground_cwd 在项目内（isPathWithinProject）；self pane 豁免：包含任一
+ * 已绑定 pane 的 workspace 无条件保留。命中则整组（tabs/panes）保留。
+ * 返回过滤后拓扑 + filter 元数据；无项目根（空串）时返回全量且不剔除。
+ */
+export function filterTopology(
+  topology: HerdrTopology,
+  projectRoot: string,
+  boundPaneIds: string[],
+): { filtered: HerdrTopology; filterInfo: HerdrFilterInfo } {
+  const total = topology.workspaces.length
+  // 预设返回：无项目根（空串）→ 全量保留，无剔除
+  const none: HerdrFilterInfo = { project_root: projectRoot, matched: total, total, hidden_workspaces: [] }
+  if (projectRoot === '') return { filtered: topology, filterInfo: none }
+
+  const bound = new Set(boundPaneIds)
+  const wsIdToPanes = new Map<string, HerdrPaneView[]>()
+  for (const p of topology.panes) {
+    const arr = wsIdToPanes.get(p.workspace_id) ?? []
+    arr.push(p)
+    wsIdToPanes.set(p.workspace_id, arr)
+  }
+
+  const keep = new Set<string>()
+  const hidden: string[] = []
+  for (const w of topology.workspaces) {
+    const panes = wsIdToPanes.get(w.workspace_id) ?? []
+    // self pane 豁免：任一已绑定 pane 在本 workspace → 无条件保留（防本对话 pane 消失）
+    if (panes.some(p => bound.has(p.pane_id))) {
+      keep.add(w.workspace_id)
+      continue
+    }
+    // §7.2 命中：worktree.checkout_path 在项目内 或 任一 pane 的 cwd/foreground_cwd 在项目内
+    const hit =
+      isPathWithinProject(projectRoot, w.checkout_path) ||
+      panes.some(p =>
+        isPathWithinProject(projectRoot, p.cwd) ||
+        isPathWithinProject(projectRoot, p.foreground_cwd))
+    if (hit) keep.add(w.workspace_id)
+    else hidden.push(w.workspace_id)
+  }
+
+  return {
+    filtered: {
+      workspaces: topology.workspaces.filter(w => keep.has(w.workspace_id)),
+      tabs: topology.tabs.filter(t => keep.has(t.workspace_id)),
+      panes: topology.panes.filter(p => keep.has(p.workspace_id)),
+    },
+    filterInfo: { project_root: projectRoot, matched: keep.size, total, hidden_workspaces: hidden },
+  }
+}
+
+/**
  * Herdr 状态跟踪器：维护所有检测到的 agent 的状态与最近输出。
  * - 状态：消费 forward 转发的 herdr/* 事件 + 轮询 agent.list 兜底；
  * - 输出：定期轮询各 agent pane 的 pane.read；
@@ -226,7 +299,16 @@ export class HerdrStatusTracker {
   private readonly pollIntervalMs: number
   private cliInfo: HerdrCliInfo = { available: false, path: 'herdr' }
   private serverInfo: HerdrServerInfo = { status: 'unknown', running: false, version: null, protocol: null, socket: null, session: null, checked_at: 0 }
-  private topologyInfo: HerdrTopology = { workspaces: [], tabs: [], panes: [] }
+  // 双拓扑（design-v2 §7.3）：full 全量 + filtered 按项目目录过滤
+  private fullTopology: HerdrTopology = { workspaces: [], tabs: [], panes: [] }
+  private filteredTopology: HerdrTopology = { workspaces: [], tabs: [], panes: [] }
+  // 目录过滤元数据（§7.2）：{matched,total,hidden}
+  private filterInfo: HerdrFilterInfo = {
+    project_root: '',
+    matched: 0,
+    total: 0,
+    hidden_workspaces: [],
+  }
   // CA-012：在途轮询周期（单飞 guard）与取消控制器
   private cycle: Promise<void> | null = null
   private abort: AbortController | null = null
@@ -242,14 +324,30 @@ export class HerdrStatusTracker {
     private readonly ctx: Context,
     private readonly client: HerdrClient,
     private readonly cliPath: string,
-    opts: { pollIntervalMs?: number; staleThresholdMs?: number; probeServerFn?: ServerProbeFn } = {},
+    opts: {
+      pollIntervalMs?: number
+      staleThresholdMs?: number
+      probeServerFn?: ServerProbeFn
+      /** 项目根（过滤用；缺省 process.cwd()，§7.2）。注入便于测试。 */
+      projectRoot?: string
+      /** self pane 豁免：枚举已绑定 pane_id（缺省走 binding-registry；注入便于测试）。 */
+      getBoundPaneIds?: () => string[]
+    } = {},
   ) {
     this.pollIntervalMs = opts.pollIntervalMs ?? 2000
     this.staleThresholdMs = opts.staleThresholdMs ?? this.pollIntervalMs * 3
     this.logger = createLogger(ctx, 'status')
     this.rateLimited = createRateLimiter(10_000)
     this.probeServerFn = opts.probeServerFn ?? probeServer
+    this.projectRoot = opts.projectRoot ?? process.cwd()
+    this.boundPaneIdsFn = opts.getBoundPaneIds ?? getBoundPaneIds
+    this.filterInfo.project_root = this.projectRoot
   }
+
+  /** 项目根（过滤基准）。 */
+  private readonly projectRoot: string
+  /** self pane 豁免的已绑定 pane_id 来源（可注入）。 */
+  private readonly boundPaneIdsFn: () => string[]
 
   /** 测试注入用：server 状态探测（默认真实 probeServer）。 */
   private readonly probeServerFn: ServerProbeFn
@@ -335,7 +433,12 @@ export class HerdrStatusTracker {
     })()
   }
 
-  snapshot(): HerdrStatusSnapshot {
+  /**
+   * 看板数据快照。
+   * @param scope 'project'（默认）返回按项目目录过滤后的 topology；'all' 返回全量。
+   *              两种 scope 都附带 filter 元数据（matched/total 以全量为口径）。
+   */
+  snapshot(scope: 'all' | 'project' = 'project'): HerdrStatusSnapshot {
     const agents = [...this.agents.values()].sort((a, b) => comparePaneId(a.pane_id, b.pane_id))
     const stale = this.lastSuccessAt === 0 || Date.now() - this.lastSuccessAt > this.staleThresholdMs
     return {
@@ -344,9 +447,10 @@ export class HerdrStatusTracker {
       connected: this.cliInfo.available && this.serverInfo.running,
       cli: this.cliInfo,
       server: this.serverInfo,
-      topology: this.topologyInfo,
+      topology: scope === 'all' ? this.fullTopology : this.filteredTopology,
       last_error: this.lastError,
       stale,
+      filter: this.filterInfo,
     }
   }
 
@@ -367,12 +471,17 @@ export class HerdrStatusTracker {
     try {
       const snap = await this.client.snapshot()
       if (signal.aborted) return
-      this.topologyInfo = {
-        workspaces: snap.workspaces.map(w => ({
-          workspace_id: (w as { workspace_id?: string }).workspace_id ?? '',
-          label: (w as { label?: string }).label,
-          active_tab_id: (w as { active_tab_id?: string }).active_tab_id,
-        })),
+      const full: HerdrTopology = {
+        workspaces: snap.workspaces.map(w => {
+          // worktree.checkout_path 作 §7.2 第二判据（快照 WorkspaceInfo.worktree）
+          const wt = (w as { worktree?: { checkout_path?: string } | null }).worktree
+          return {
+            workspace_id: (w as { workspace_id?: string }).workspace_id ?? '',
+            label: (w as { label?: string }).label,
+            active_tab_id: (w as { active_tab_id?: string }).active_tab_id,
+            checkout_path: wt?.checkout_path,
+          }
+        }),
         tabs: snap.tabs.map(t => ({
           tab_id: (t as { tab_id?: string }).tab_id ?? '',
           workspace_id: (t as { workspace_id?: string }).workspace_id ?? '',
@@ -380,17 +489,27 @@ export class HerdrStatusTracker {
           active_pane_id: (t as { active_pane_id?: string }).active_pane_id,
           pane_count: (t as { pane_count?: number }).pane_count,
         })),
-        panes: snap.panes.map(p => ({
-          pane_id: (p as { pane_id?: string }).pane_id ?? '',
-          workspace_id: (p as { workspace_id?: string }).workspace_id ?? '',
-          tab_id: (p as { tab_id?: string }).tab_id,
-          title: (p as { title?: string }).title ?? (p as { terminal_title?: string }).terminal_title,
-          cwd: (p as { cwd?: string }).cwd,
-          foreground_cwd: (p as { foreground_cwd?: string }).foreground_cwd,
-          focused: (p as { focused?: boolean }).focused === true,
-          agent_status: (p as { agent_status?: string }).agent_status,
-        })),
+        panes: snap.panes.map(p => {
+          // label 来自 snapshot PaneInfo.label（rename 后即时，T01 实测）
+          const src = p as { pane_id?: string; workspace_id?: string; tab_id?: string; title?: string; terminal_title?: string; label?: string; cwd?: string; foreground_cwd?: string; focused?: boolean; agent_status?: string }
+          return {
+            pane_id: src.pane_id ?? '',
+            workspace_id: src.workspace_id ?? '',
+            tab_id: src.tab_id,
+            title: src.title ?? src.terminal_title,
+            label: src.label,
+            cwd: src.cwd,
+            foreground_cwd: src.foreground_cwd,
+            focused: src.focused === true,
+            agent_status: src.agent_status,
+          }
+        }),
       }
+      // self pane 豁免依赖最新已绑定 pane id（属性型正则调用，成本低）
+      const { filtered, filterInfo } = filterTopology(full, this.projectRoot, this.boundPaneIdsFn())
+      this.fullTopology = full
+      this.filteredTopology = filtered
+      this.filterInfo = filterInfo
     } catch (err) {
       if (!signal.aborted) {
         this.lastError = `topology poll failed: ${errMsg(err)}`
@@ -436,7 +555,9 @@ export class HerdrStatusTracker {
     for (const [paneId, agent] of this.agents) {
       if (signal.aborted) return
       try {
-        const { text } = await this.client.paneRead({ pane_id: paneId, source: 'recent', lines: 300 })
+        // 实测（env-findings v2）：recent_unwrapped 是 herdr 原生未折行快照（逻辑行），
+        // 避免窄终端（约 35~40 列）折行导致卡片日志每行过短、右侧大片空白
+        const { text } = await this.client.paneRead({ pane_id: paneId, source: 'recent_unwrapped', lines: 300 })
         if (signal.aborted) return
         const current = agent.output
         // 仅当内容变化时更新（避免无谓的 updated_at 抖动）

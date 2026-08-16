@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { comparePaneId, probeCli, probeServer, startHerdrServer, type ExecFileFn, type HerdrServerInfo, type ServerProbeFn, type SpawnFn } from '../../src/status.ts'
+import { comparePaneId, filterTopology, probeCli, probeServer, startHerdrServer, type ExecFileFn, type HerdrServerInfo, type ServerProbeFn, type SpawnFn } from '../../src/status.ts'
 
 test('comparePaneId: natural order (p2 < p10)', () => {
   const ids = ['w8:p10', 'w8:p2', 'w8:p1', 'w9:p1', 'w8:p11']
@@ -143,7 +143,7 @@ const EMPTY_SNAP = {
   focused_pane_id: null, focused_tab_id: null, focused_workspace_id: null,
 }
 
-function makeTrackerClient(opts: { snapshotDelayMs?: number; snapshotError?: boolean } = {}) {
+function makeTrackerClient(opts: { snapshotDelayMs?: number; snapshotError?: boolean; snap?: unknown } = {}) {
   const calls = { snapshot: 0, listAgents: 0, paneRead: 0 }
   const state = { snapshotError: opts.snapshotError === true }
   const client = {
@@ -151,7 +151,7 @@ function makeTrackerClient(opts: { snapshotDelayMs?: number; snapshotError?: boo
       calls.snapshot++
       if (opts.snapshotDelayMs) await new Promise(r => setTimeout(r, opts.snapshotDelayMs))
       if (state.snapshotError) throw new Error('boom')
-      return EMPTY_SNAP
+      return opts.snap ?? EMPTY_SNAP
     },
     listAgents: async () => { calls.listAgents++; return [] },
     paneRead: async () => { calls.paneRead++; return { text: '', truncated: false } },
@@ -159,7 +159,13 @@ function makeTrackerClient(opts: { snapshotDelayMs?: number; snapshotError?: boo
   return { client, calls, setSnapshotError: (v: boolean) => { state.snapshotError = v } }
 }
 
-const makeTracker = (client: HerdrClient, opts: { pollIntervalMs?: number; staleThresholdMs?: number; probeServerFn?: ServerProbeFn } = {}) =>
+const makeTracker = (client: HerdrClient, opts: {
+  pollIntervalMs?: number
+  staleThresholdMs?: number
+  probeServerFn?: ServerProbeFn
+  projectRoot?: string
+  getBoundPaneIds?: () => string[]
+} = {}) =>
   new HerdrStatusTracker(new Context(), client, 'herdr', {
     // 默认注入 mock probe，避免依赖宿主机真实 herdr（CI runner 上没有 herdr）
     probeServerFn: async (): Promise<HerdrServerInfo> => ({
@@ -243,3 +249,148 @@ test('CR: a successful cycle clears last_error from a previous failure', async (
   assert.equal(tracker.snapshot().last_error, null, 'successful cycle must clear the old error')
   assert.equal(tracker.snapshot().stale, false, 'recovered → not stale')
 })
+
+// ---------------------------------------------------------------------------
+// T05：目录过滤（filterTopology 纯函数）与 snapshot scope / filter 元数据
+// 注：测试路径用不存在于磁盘的 /proj/... 前缀，isPathWithinProject 的 realpath
+// 失败回退原值，前缀边界比较在原始字符串上仍然成立（跨平台确定性）。
+// ---------------------------------------------------------------------------
+
+import type { HerdrTopology } from '../../src/status.ts'
+
+const PROJ = '/proj/repo'
+const ROOT = PROJ + '/root'
+const OUTSIDE = '/proj/other'
+
+function topo(workspaces: { id: string; panes: { id: string; cwd?: string; fwd?: string }[] }[]): HerdrTopology {
+  const ids = workspaces.map(w => w.id)
+  const wsViews = ids.map(id => ({ workspace_id: id }))
+  const tabs = ids.map(id => ({ tab_id: id + ':t1', workspace_id: id }))
+  const panes = workspaces.flatMap(w =>
+    w.panes.map(p => ({
+      pane_id: p.id,
+      workspace_id: w.id,
+      tab_id: w.id + ':t1',
+      cwd: p.cwd,
+      foreground_cwd: p.fwd,
+      focused: false,
+    })),
+  )
+  return { workspaces: wsViews, tabs, panes } as unknown as HerdrTopology
+}
+
+test('T05: filterTopology keeps workspace whose pane cwd is inside project', () => {
+  const t = topo([
+    { id: 'w1', panes: [{ id: 'w1:p1', cwd: PROJ + '/src' }] },
+    { id: 'w2', panes: [{ id: 'w2:p1', cwd: OUTSIDE }] },
+  ])
+  const { filtered, filterInfo } = filterTopology(t, PROJ, [])
+  assert.deepEqual(filtered.workspaces.map(w => w.workspace_id), ['w1'], 'only in-project workspace kept')
+  assert.deepEqual(filtered.panes.map(p => p.pane_id), ['w1:p1'], 'panes filtered with workspace')
+  assert.equal(filterInfo.matched, 1)
+  assert.equal(filterInfo.total, 2)
+  assert.deepEqual(filterInfo.hidden_workspaces, ['w2'])
+  assert.equal(filterInfo.project_root, PROJ)
+})
+
+test('T05: filterTopology prefix boundary — sibling prefix is not inside', () => {
+  const t = topo([{ id: 'w1', panes: [{ id: 'w1:p1', cwd: PROJ + '_other/x' }] }])
+  const { filtered, filterInfo } = filterTopology(t, PROJ, [])
+  assert.equal(filtered.workspaces.length, 0, '/proj/repo_other is NOT under /proj/repo')
+  assert.equal(filterInfo.matched, 0)
+})
+
+test('T05: filterTopology self-pane exemption keeps bound workspace unconditionally', () => {
+  const t = topo([{ id: 'w1', panes: [{ id: 'w1:p1', cwd: OUTSIDE, fwd: OUTSIDE }] }])
+  const { filtered, filterInfo } = filterTopology(t, PROJ, ['w1:p1'])
+  assert.deepEqual(filtered.workspaces.map(w => w.workspace_id), ['w1'], 'bound pane workspace kept despite cwd outside')
+  assert.equal(filterInfo.matched, 1)
+  assert.equal(filterInfo.total, 1)
+  assert.deepEqual(filterInfo.hidden_workspaces, [])
+})
+
+test('T05: filterTopology foreground_cwd hit counts', () => {
+  const t = topo([{ id: 'w1', panes: [{ id: 'w1:p1', cwd: OUTSIDE, fwd: PROJ + '/x' }] }])
+  const { filtered } = filterTopology(t, PROJ, [])
+  assert.deepEqual(filtered.workspaces.map(w => w.workspace_id), ['w1'], 'foreground_cwd inside project matches')
+})
+test('T05: filterTopology workspaces with no panes match via checkout_path', () => {
+  // workspace 无 pane（或 pane cwd 缺失）时，命中退化为 worktree.checkout_path（§7.2 第 1 判据）
+  const t: HerdrTopology = {
+    workspaces: [
+      { workspace_id: 'w1', checkout_path: PROJ + '/x' },
+      { workspace_id: 'w2', checkout_path: OUTSIDE },
+    ],
+    tabs: [],
+    panes: [],
+  }
+  const { filtered, filterInfo } = filterTopology(t, PROJ, [])
+  assert.deepEqual(filtered.workspaces.map(w => w.workspace_id), ['w1'])
+  assert.deepEqual(filterInfo.hidden_workspaces, ['w2'])
+})
+
+test('T05: filterTopology empty projectRoot keeps everything (no filtering)', () => {
+  const t = topo([
+    { id: 'w1', panes: [{ id: 'w1:p1', cwd: OUTSIDE }] },
+    { id: 'w2', panes: [{ id: 'w2:p1', cwd: OUTSIDE }] },
+  ])
+  const { filtered, filterInfo } = filterTopology(t, '', [])
+  assert.equal(filtered.workspaces.length, 2)
+  assert.equal(filterInfo.matched, 2)
+  assert.equal(filterInfo.total, 2)
+  assert.deepEqual(filterInfo.hidden_workspaces, [])
+})
+
+test('T05: snapshot scope defaults to filtered, scope=all returns full', async () => {
+  const snap = {
+    version: '0.8.0', protocol: 19,
+    workspaces: [{ workspace_id: 'w1' }, { workspace_id: 'w2' }],
+    tabs: [{ tab_id: 'w1:t1', workspace_id: 'w1' }, { tab_id: 'w2:t1', workspace_id: 'w2' }],
+    panes: [
+      { pane_id: 'w1:p1', workspace_id: 'w1', cwd: PROJ + '/src' },
+      { pane_id: 'w2:p1', workspace_id: 'w2', cwd: OUTSIDE },
+    ],
+    layouts: [], agents: [],
+    focused_pane_id: null, focused_tab_id: null, focused_workspace_id: null,
+  }
+  const { client } = makeTrackerClient({ snap })
+  const tracker = makeTracker(client, { pollIntervalMs: 60_000, projectRoot: PROJ, getBoundPaneIds: () => [] })
+  tracker.start()
+  await sleepMs(150)
+  tracker.stop()
+  const proj = tracker.snapshot()
+  assert.deepEqual(proj.topology.workspaces.map(w => w.workspace_id), ['w1'])
+  assert.deepEqual(proj.filter.hidden_workspaces, ['w2'])
+  assert.equal(proj.filter.matched, 1)
+  assert.equal(proj.filter.total, 2)
+  const all = tracker.snapshot('all')
+  assert.deepEqual(all.topology.workspaces.map(w => w.workspace_id), ['w1', 'w2'])
+  assert.equal(all.filter.matched, 1, 'filter 元数据与 scope 无关')
+  assert.equal(all.filter.total, 2)
+  assert.deepEqual(tracker.snapshot('project').topology.workspaces.map(w => w.workspace_id), ['w1'])
+})
+
+test('T05: pollTopology maps pane label from snapshot PaneInfo.label', async () => {
+  const snap = {
+    version: '0.8.0', protocol: 19,
+    workspaces: [{ workspace_id: 'w1' }],
+    tabs: [{ tab_id: 'w1:t1', workspace_id: 'w1' }],
+    panes: [
+      { pane_id: 'w1:p1', workspace_id: 'w1', cwd: PROJ + '/src', label: '我的 pane' },
+      { pane_id: 'w1:p2', workspace_id: 'w1', cwd: PROJ + '/src' },
+    ],
+    layouts: [], agents: [],
+    focused_pane_id: null, focused_tab_id: null, focused_workspace_id: null,
+  }
+  const { client } = makeTrackerClient({ snap })
+  const tracker = makeTracker(client, { pollIntervalMs: 60_000, projectRoot: PROJ, getBoundPaneIds: () => [] })
+  tracker.start()
+  await sleepMs(150)
+  tracker.stop()
+  const panes = tracker.snapshot().topology.panes
+  const p1 = panes.find(p => p.pane_id === 'w1:p1')
+  const p2 = panes.find(p => p.pane_id === 'w1:p2')
+  assert.equal(p1?.label, '我的 pane', 'label 字段映射自 snapshot')
+  assert.equal(p2?.label, undefined, '无 label 的 pane 字段保持缺失')
+})
+

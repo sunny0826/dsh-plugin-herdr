@@ -42,3 +42,11 @@ test('CA-014: config bounds — maxReconnectMs out of range fails at load', () =
   const edge = Config['~standard'].validate({ events: { maxReconnectMs: 600000 } }) as { value: { events: { maxReconnectMs: number } } }
   assert.equal(edge.value.events.maxReconnectMs, 600000)
 })
+
+// T05：projectRoot（看板目录过滤）配置项
+test('T05: projectRoot absent by default, configurable via config', () => {
+  const value = (Config['~standard'].validate({}) as { value: { projectRoot?: string } }).value
+  assert.equal(value.projectRoot, undefined, 'projectRoot 是可选配置，缺省不设值')
+  const withRoot = (Config['~standard'].validate({ projectRoot: '/repo' }) as { value: { projectRoot: string } }).value
+  assert.equal(withRoot.projectRoot, '/repo')
+})
