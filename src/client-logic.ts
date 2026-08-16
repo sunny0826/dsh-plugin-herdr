@@ -372,3 +372,37 @@ export function agentTheme(agentName: string | undefined): AgentAccent {
   if (n.startsWith('dsh')) return 'dsh'
   return 'other'
 }
+
+// ---------------------------------------------------------------------------
+// Herdr 模式判定与面板会话聚焦（design: herdr-mode-gating）。
+// deriveHerdrMode：当前会话是否 herdr 模式（agentPreset 权威信号）；
+// filterGroupsToSession：面板只保留包含本会话绑定 pane 的 workspace 组。
+// ---------------------------------------------------------------------------
+
+/** herdr agent preset id（与服务端 preset-install.ts 的 PRESET_ID 一致；两处需同步修改）。 */
+export const HERDR_PRESET_ID = 'herdr'
+
+/** 会话列表状态 → 当前会话是否为 herdr 模式（agentPreset === HERDR_PRESET_ID）。 */
+export function deriveHerdrMode(
+  byId: Record<string, { agentPreset?: string }> | undefined,
+  current: string | undefined,
+): boolean {
+  return byId?.[current ?? '']?.agentPreset === HERDR_PRESET_ID
+}
+
+/**
+ * 面板会话聚焦：只保留包含 selfPaneId 的 workspace 组。
+ * - selfPaneId 为 null/空（未绑定/查询在途）→ []（不展示其他 workspace）；
+ * - selfPaneId 对应的 pane 不在 topology 中（pane 已关闭）→ []；
+ * - 命中 → 该 workspace 组（组内 panes 保持 buildGroups 排序）。
+ */
+export function filterGroupsToSession(
+  topology: HerdrTopology | undefined,
+  selfPaneId: string | null | undefined,
+): ReturnType<typeof buildGroups> {
+  if (!selfPaneId) return []
+  const pane = topology?.panes.find(p => p.pane_id === selfPaneId)
+  if (!pane) return []
+  return buildGroups(topology).filter(g => g.workspace.workspace_id === pane.workspace_id)
+}
+

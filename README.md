@@ -1,21 +1,27 @@
 # dsh-plugin-herdr
 
+> **English** | [简体中文](README.zh-CN.md)
+
 Herdr control-plane plugin for DeepSeek Harness (DSH): observe and drive
 [Herdr](https://herdr.dev) — a terminal workspace manager for AI coding agents —
 from DSH sessions.
 
-- **18 `herdr_*` tools**: snapshot, agent list, pane run/read/split/send-keys,
-  agent wait/prompt/explain/send-keys, workspace create/close/rename, pane
-  close/rename, pane layout, layout apply, notification — all over the Herdr
-  socket protocol (JSONL over a Unix-domain socket; the CLI transport has been
-  removed).
-- **Herdr panel**: a two-column pane-card grid with drag-to-reorder, per-pane
-  log preview/expand, rename and guarded close (confirm + self-pane refusal),
-  plus a project-directory filter toggle — and a right-side floating pane status
-  list with drag & edge snap and a collapsed logo button.
+- **19 `herdr_*` tools**: snapshot, agent list, agent start/wait/prompt/
+  explain/send-keys, pane run/read/split/send-keys, workspace create/close/
+  rename, pane close/rename, pane layout, layout apply, notification — all over
+  the Herdr socket protocol (JSONL over a Unix-domain socket; the CLI transport
+  has been removed).
+- **Herdr panel & tab, scoped to the session**: both the conversation-page
+  Herdr tab and the right-side floating pane list show **only the current
+  session's dedicated workspace and its panes**. Mode-gated UI: conversations
+  that are not in "Herdr 模式" show no Herdr tab, panel, or header pill at all.
 - **herdr mode (agent preset)**: create a session in "Herdr 模式" — the session
-  binds to its own Herdr pane and reports working/idle state to the Herdr
-  sidebar.
+  gets a **dedicated workspace created in the project directory**, every pane
+  the session produces (splits, agents) lives in that workspace, and the whole
+  workspace is reclaimed when the session ends.
+- **Open real agents**: `herdr_agent_start` starts a coding agent (pi / codex /
+  claude) in the session workspace and waits until Herdr recognizes it; submit
+  work with `herdr_agent_prompt` and wait with `herdr_agent_wait`.
 - **Server dashboard**: checks whether the headless Herdr server is running and
   offers a one-click start button (new-session and session pages).
 
@@ -56,7 +62,15 @@ picker (copied to `$DSH_HOME/.agent-presets/herdr/` on first load).
 | `events.enabled` | boolean | `false` | subscribe to Herdr events |
 | `events.maxReconnectMs` | number | 30000 | event subscription reconnect cap |
 | `reportState` | boolean | `true` | report DSH→Herdr state inside a pane (`HERDR_ENV`) |
-| `projectRoot` | string | – | project directory for panel filtering; defaults to `process.cwd()` (one workspace-root per DSH web instance) |
+| `projectRoot` | string | – | project directory for server-side filtering; defaults to `process.cwd()` |
+
+Preset configuration (`presets/herdr/agent.cordis.yml`, `herdr-session-mode`):
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `paneId` | `''` | Fixed pane binding shared by all sessions; empty = every session creates its own dedicated workspace |
+| `label` | `''` | Display label override; empty = auto `dsh:<project name>` (cwd basename, falls back to `dsh:<short session id>`) |
+| `cwd` | – | Workspace working directory; empty = the session's project directory |
 
 Output limits (CA-014):
 
@@ -89,49 +103,76 @@ Example patch (`cordis.patch.yml`):
 | --- | --- |
 | `herdr_snapshot` | Session snapshot: workspaces, tabs, panes, agents, focus |
 | `herdr_agent_list` | List agents (filter by workspace / status) |
-| `herdr_pane_run` | Run a shell command in a pane; waits for output to settle |
-| `herdr_agent_wait` | Wait for an agent to reach a state |
-| `herdr_workspace_create` | Create a workspace |
-| `herdr_workspace_close` | Close a workspace and all its panes — **destructive** |
-| `herdr_pane_close` | Close a pane — **destructive** |
-| `herdr_workspace_rename` | Rename a workspace (`workspace_id`, non-empty `label` ≤64 chars) |
-| `herdr_pane_rename` | Rename a pane (`pane_id`, `label` may be empty/null to clear the name) |
-| `herdr_pane_split` | Split a pane (direction/ratio/cwd/env) |
-| `herdr_pane_send_keys` | Send key presses to a pane |
-| `herdr_pane_read` | Read pane terminal output (visible/recent) |
-| `herdr_pane_layout` | Read a pane's layout |
-| `herdr_layout_apply` | Apply a declarative layout |
+| `herdr_agent_start` | **Start a coding agent** (pi / codex / claude) in a pane and wait until Herdr recognizes it; default pane = a new split inside the session workspace |
 | `herdr_agent_prompt` | Submit a prompt to an agent, optionally wait for a state |
+| `herdr_agent_wait` | Wait for an agent to reach a state |
 | `herdr_agent_explain` | Explain agent detection state |
 | `herdr_agent_send_keys` | Send keys to an agent |
+| `herdr_pane_run` | Run a shell command in a pane; reuses the session's bound pane by default (a new split only when there is no bound pane) |
+| `herdr_pane_read` | Read pane terminal output (visible/recent) |
+| `herdr_pane_split` | Split a pane (direction/ratio/cwd/env) |
+| `herdr_pane_send_keys` | Send key presses to a pane |
+| `herdr_pane_layout` | Read a pane's layout |
+| `herdr_pane_close` | Close a pane — **destructive** |
+| `herdr_pane_rename` | Rename a pane (`pane_id`, `label` may be empty/null to clear the name) |
+| `herdr_workspace_create` | Create a workspace (refused in herdr 模式 — the session already owns one) |
+| `herdr_workspace_close` | Close a workspace and all its panes — **destructive** |
+| `herdr_workspace_rename` | Rename a workspace (`workspace_id`, non-empty `label` ≤64 chars) |
+| `herdr_layout_apply` | Apply a declarative layout |
 | `herdr_notification` | Show a system notification |
 
 ## herdr mode (agent preset)
 
 Select **Herdr 模式** when creating a session. The session:
 
-- binds to a Herdr pane (auto-created via split, or `config.paneId` in
-  `presets/herdr/agent.cordis.yml`);
+- gets a **dedicated workspace** created in the project directory
+  (session cwd) at session start; its root pane is the session's bound pane;
+- keeps **every pane it produces** (pane_run splits, agent_start, pane_split)
+  inside that workspace — `herdr_workspace_create` is refused so nothing
+  leaks out;
 - reports `working` / `idle` to the Herdr sidebar (`pane.report-agent`);
-- closes its owned pane when the session is disposed (fixed bindings are only
-  released).
+- closes the whole dedicated workspace when the session is disposed (fixed
+  bindings are only released);
+- survives process restarts: the bound pane carries an internal marker
+  (`tokens.dsh_session = <sessionId>`, permanent), so a restarted instance
+  reuses the same pane instead of creating duplicates.
+
+### Naming conventions
+
+- **Display name** (workspace / bound-pane label): `dsh:<project name>`
+  (session cwd basename; `dsh:<short session id>` fallback). Config `label`
+  overrides.
+- **Internal marker** is kept separate from the display name: the pane's
+  `tokens.dsh_session` (not the label), so no session id leaks into visible
+  names.
+- **Agent names**: `herdr_agent_start` auto-generates `<kind>-<n>` (e.g.
+  `pi-1`); pass `name` explicitly for `<kind>-<purpose>` (e.g.
+  `pi-disk-check`).
+
+### Opening an agent to do work
+
+```
+herdr_agent_start {kind: 'pi'}                       # starts in a new pane inside the session workspace
+herdr_agent_prompt {target: '<pane_id>', text: '...'} # submit the task
+herdr_agent_wait   {target: '<pane_id>', until: [idle, done, blocked], timeout_ms}
+herdr_pane_read    {pane_id: '<pane_id>'}             # read the result
+```
+
+One-shot commands like `pi --print "..."` are **not** Herdr agents —
+`herdr_agent_wait` cannot track them; use `herdr_agent_start` instead.
 
 ## Herdr panel interactions
 
-The conversation-page Herdr tab and the floating right-hand pane list share one
-status source (`/herdr-status`), so scope and filtering behave identically
-(v2, CA-019..024):
+The conversation-page Herdr tab and the right-side floating pane list are
+**scoped to the current session** (mode-gated: hidden entirely outside
+herdr 模式):
 
-- **Project filtering**: only workspaces under the project directory (config
-  `projectRoot`, default `process.cwd()`) are shown; a "仅本项目
-  （matched/total）" hint appears when filtered, with a "显示全部/仅本项目"
-  toolbar toggle (`?scope=all`) whose choice is kept in localStorage key
-  `herdr:show-all-ws`. On empty project scope the panel offers "显示全部".
+- **Session workspace only**: both views show just the session's dedicated
+  workspace and its panes (no project/all scope toggle — that concept is gone).
 - **Two-column cards + drag sort**: panes render as a two-column grid; dragging
   the ⋮⋮ handle reorders within a workspace. Order persists in localStorage key
-  `herdr:pane-order:<workspace_id>`. Cross-workspace drags are ignored
-  (one-off "同 workspace 内排序" hint). Reacts to narrow viewports (<640px →
-  single column).
+  `herdr:pane-order:<workspace_id>`. Cross-workspace drags are ignored.
+  Reacts to narrow viewports (<640px → single column).
 - **Log preview/expand**: card body shows the latest lines with a fade-out;
   "展开" gives an independently scrolling log that auto-follows a working agent
   and offers "复制" (full output).
@@ -141,6 +182,8 @@ status source (`/herdr-status`), so scope and filtering behave identically
 - **Close**: ✕ (hover) opens a confirm dialog; a workspace close shows its pane
   count. The dialog and the server both refuse closing the pane that hosts the
   current session (self-pane).
+- **Herdr tab logo**: the tab is labelled with the herdr logo (CSS-masked,
+  theme-aware) instead of text.
 
 ## Safety boundary
 
@@ -167,23 +210,16 @@ status source (`/herdr-status`), so scope and filtering behave identically
 | `HERDR_UNAVAILABLE`: "herdr socket not found" | Start the Herdr headless server (`herdr server` or the panel's start button); install herdr first: `curl -fsSL https://herdr.dev/install.sh | sh` |
 | Plugin fails to load with "requires a resolvable socket path" | Windows is not supported; on POSIX set `socketPath`/`HERDR_SOCKET_PATH` |
 | No "Herdr 模式" preset | Check `$DSH_HOME/.agent-presets/herdr/` exists (plugin recreates it on load) |
+| Panel stuck on "正在获取本会话 pane…" | The session was switched into herdr 模式 after creation or the server restarted; the first model request triggers a fallback bind — send a message, or restart the profile |
+| `herdr_agent_start` fails with `agent_pane_busy` | Transient: a freshly split pane's shell is still initializing; the tool retries automatically — check again shortly |
 
 ## Development
 
 ```sh
 pnpm install
 pnpm build        # tsdown (node entries + web client bundle)
-pnpm quality      # CA-010 质量门：typecheck + gen-types 漂移检查 + unit tests
+pnpm quality      # typecheck + gen-types drift check + unit tests
 pnpm test         # unit tests (node --test)
-pnpm test:integration  # build + run.mjs + extended.mjs + events.mjs + close-rename.mjs (真实 herdr，前置不满足时 SKIP)
+pnpm test:integration  # build + run.mjs + extended.mjs + events.mjs + close-rename.mjs (real herdr; SKIPs when unavailable)
 pnpm gen:types    # regenerate protocol types from the herdr schema fixture
 ```
-
-## Compatibility
-
-- Verified against **herdr 0.8.0 / protocol 19 / schema_version 1** (the
-  fixture `test/fixtures/herdr-api.schema.json` matches live `herdr api schema`;
-  `pnpm gen:types:check` fails on drift).
-- Acceptance status is tracked in `TASKS.md` (三态：实现 / 自动验证 / 人工验证);
-  real-browser visual items (M0-06 HMR, M1-10, M3-05, M7/M10-M12) remain
-  manual pending — automated coverage lives at the logic layer (CA-016).

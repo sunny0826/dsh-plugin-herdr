@@ -4,6 +4,8 @@
 import { HerdrView, HerdrHeaderPill } from './herdr-view.tsx'
 import { setSessionIdReader } from './navigation.ts'
 import { HerdrPaneList, HerdrHeroStatus } from './pane-list.tsx'
+import { startModeTracking, type SessionListLike } from './mode.ts'
+import { startTabController } from './tab-controller.ts'
 
 // 宽松类型桥：slots / sessions
 interface SlotsApi {
@@ -18,10 +20,21 @@ export interface ClientCtx {
 }
 
 export function apply(ctx: ClientCtx) {
-  // sessions 服务就绪后注入当前会话 id 读取器
+  // 模式跟踪：当前会话 agentPreset === 'herdr' → herdr 模式（Tab/面板/胶囊门控的事实源）
+  let stopModeTracking: (() => void) | null = null
   ctx.inject(['sessions'], (scope: unknown) => {
-    const sessions = (scope as { sessions?: { list?: { getSnapshot?: () => { current?: string } } } }).sessions
+    const sessions = (scope as { sessions?: { list?: SessionListLike } }).sessions
     setSessionIdReader(() => sessions?.list?.getSnapshot?.()?.current)
+    if (sessions?.list) {
+      stopModeTracking = startModeTracking(sessions.list)
+    }
+  })
+  // herdr Tab 打标：DOM 显隐门控 + logo 样式锚点（观察 tablist 渲染与 React 重渲染）
+  const stopTabController = startTabController()
+  ctx.effect(() => () => {
+    stopModeTracking?.()
+    stopModeTracking = null
+    stopTabController()
   })
 
   ctx.slots.inject('conversation.view', () =>

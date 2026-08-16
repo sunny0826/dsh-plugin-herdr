@@ -2,6 +2,8 @@
 // 顺序、内容与拆分前的 client.tsx 完全一致：模块加载时执行一次注入，
 // 通过 STYLE_ID 检查避免重复（原样保留）。
 
+import { herdrLogoMaskUrl } from './logo-path.ts'
+
 const STYLE_ID = 'dsh-plugin-herdr-styles'
 
 if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
@@ -565,6 +567,29 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
 }
 .herdr-install a { color: var(--dsw-alias-state-business-primary); text-decoration: none; }
 .herdr-install a:hover { text-decoration: underline; }
+
+/* ── herdr 模式门控与 Tab logo（design: herdr-mode-gating） ─────────────────
+ * 门控锚点 data-herdr-mode 由 src/web/mode.ts 镜像到 <html>；
+ * herdr-tab class 由 src/web/tab-controller.ts 打在 tablist 的 Herdr 按钮上。
+ * 非 herdr（含初始未决）会话隐藏 tab；label 文字以 font-size:0 隐藏，
+ * 保留 textContent 供 a11y（aria-label）与 DOM 匹配，::before 以 CSS mask
+ * 渲染 herdr logo（currentColor 随主题取色）。 */
+:root {
+  --herdr-logo-mask: url("${herdrLogoMaskUrl()}");
+}
+html:not([data-herdr-mode='1']) .herdr-tab { display: none; }
+.herdr-tab { font-size: 0; line-height: 0; }
+.herdr-tab::before {
+  content: '';
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+  background: currentColor;
+  -webkit-mask: var(--herdr-logo-mask) center / contain no-repeat;
+  mask: var(--herdr-logo-mask) center / contain no-repeat;
+}
+
 `
   document.head.appendChild(style)
 }

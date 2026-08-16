@@ -15,7 +15,9 @@ export function registerAgentPrompt(ctx: Context) {
     name: 'herdr_agent_prompt',
     description:
       'Submit a prompt to an agent in a Herdr pane. Optionally wait for the first matching state ' +
-      'after submission (with a stall guard when the agent is idle).',
+      'after submission (with a stall guard when the agent is idle). Target an agent started ' +
+      'with herdr_agent_start; if no agent is running yet, start one first instead of prompting ' +
+      'a bare pane.',
     parameters: {
       target: { type: 'string', required: true, description: 'Pane id (e.g. w1:p2) or agent name' },
       text: { type: 'string', required: true, description: 'Prompt text to submit' },

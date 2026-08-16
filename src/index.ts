@@ -5,7 +5,7 @@ import { createLogger } from './log.ts'
 import { setupEventForwarding } from './events/forward.ts'
 import { setupStateReporting } from './events/state-report.ts'
 import { HerdrStatusTracker, startHerdrServer } from './status.ts'
-import { getBindingRegistry, getBoundPaneIds } from './binding-registry.ts'
+import { getBindingRegistry, getBoundPaneIds, sessionIdFromTokens } from './binding-registry.ts'
 import { registerHerdrSkill } from './skill.ts'
 import { registerSnapshot } from './tools/snapshot.ts'
 import { registerAgentList } from './tools/agent-list.ts'
@@ -18,6 +18,7 @@ import { registerPaneRead } from './tools/pane-read.ts'
 import { registerPaneLayout } from './tools/pane-layout.ts'
 import { registerLayoutApply } from './tools/layout-apply.ts'
 import { registerAgentPrompt } from './tools/agent-prompt.ts'
+import { registerAgentStart } from './tools/agent-start.ts'
 import { registerAgentExplain } from './tools/agent-explain.ts'
 import { registerAgentSendKeys } from './tools/agent-send-keys.ts'
 import { registerNotification } from './tools/notification.ts'
@@ -75,6 +76,7 @@ export function apply(ctx: Context, config: ConfigType) {
   // layout.apply 为 socket 协议原生方法（全量迁移后恒注册）
   registerLayoutApply(ctx)
   registerAgentPrompt(ctx)
+  registerAgentStart(ctx)
   registerAgentExplain(ctx)
   registerAgentSendKeys(ctx)
   registerNotification(ctx)
@@ -142,16 +144,24 @@ export function apply(ctx: Context, config: ConfigType) {
     offBindingRoute = webServer.register({
       kind: 'exact',
       path: '/herdr-session-pane',
-      handler: (req: unknown, res: Res) => {
+      handler: async (req: unknown, res: Res) => {
         if (!guard(res, req, 'GET')) return
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         let paneId: string | null = null
         try {
           const r = req as Req
           const agent = new URL(r.url ?? '/', 'http://x').searchParams.get('agent')
-          paneId = agent ? getBindingRegistry().get(agent)?.pane_id ?? null : null
+          if (agent) {
+            paneId = getBindingRegistry().get(agent)?.pane_id ?? null
+            if (!paneId) {
+              // registry 未命中（进程重启/插件重载后内存清空，或 bind 尚在途）：
+              // 从 herdr 中查找带本会话内部标记（tokens.dsh_session = agent）的 pane 兜底
+              const snap = await ctx.herdr.snapshot()
+              paneId = (snap.panes ?? []).find(p => sessionIdFromTokens(p.tokens) === agent)?.pane_id ?? null
+            }
+          }
         } catch {
-          // 忽略解析错误（返回 null）
+          // 忽略解析/快照错误（返回 null）
         }
         res.end(JSON.stringify({ pane_id: paneId }))
       },

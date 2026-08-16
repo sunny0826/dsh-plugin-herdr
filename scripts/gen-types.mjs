@@ -30,7 +30,7 @@ const METHODS = [
   'pane.split', 'pane.send_text', 'pane.send_keys', 'pane.wait_for_output',
   'pane.read', 'pane.report_agent', 'pane.report_metadata', 'pane.clear_agent_authority',
   'workspace.create', 'events.subscribe', 'events.wait', 'layout.export', 'layout.apply',
-  'notification.show', 'agent.prompt', 'agent.send_keys',
+  'notification.show', 'agent.prompt', 'agent.send_keys', 'agent.start',
 ]
 
 // ---------- 方法 → 响应分支映射（CA-004） ----------
@@ -49,6 +49,7 @@ const RESULT_BRANCHES = {
   'agent.explain': 'agent_explain',
   'agent.prompt': 'agent_prompted',
   'agent.send_keys': 'ok',
+  'agent.start': 'agent_started',
   'pane.split': 'pane_info',
   'pane.send_text': 'ok',
   'pane.send_keys': 'ok',
