@@ -50,7 +50,8 @@
     # 固定绑定 pane（所有会话共用）；留空则每个会话自动在项目目录
     # 创建专属 workspace（root pane 即绑定 pane）。
     paneId: ''
-    # 专属 workspace 的 label（多个 herdr 会话各自独立 workspace）。
-    label: dsh
+    # workspace/pane 显示名：留空自动生成 "dsh:<项目名>"（会话 cwd basename，
+    # 无 cwd 回退 "dsh:<短会话 id>"）；非空时作为完整 label 自定义覆盖。
+    label: ''
     # 新 pane 的 shell 工作目录（可选）。
     # cwd: ''
