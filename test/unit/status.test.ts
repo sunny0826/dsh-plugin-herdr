@@ -13,7 +13,9 @@ test('comparePaneId: same pane equals', () => {
 })
 
 test('probeCli: installed binary reports available with version', async () => {
-  const info = await probeCli('herdr')
+  // 注入 execFn，避免依赖宿主机真实 herdr（CI runner 上没有 herdr）
+  const execFn: ExecFileFn = (_cmd, _args, _opts, cb) => cb(null, 'herdr 0.8.0\n')
+  const info = await probeCli('herdr', execFn)
   assert.equal(info.available, true)
   assert.match(info.version ?? '', /\d+\.\d+\.\d+/, 'version should contain 0.8.0')
 })
@@ -158,7 +160,13 @@ function makeTrackerClient(opts: { snapshotDelayMs?: number; snapshotError?: boo
 }
 
 const makeTracker = (client: HerdrClient, opts: { pollIntervalMs?: number; staleThresholdMs?: number; probeServerFn?: ServerProbeFn } = {}) =>
-  new HerdrStatusTracker(new Context(), client, 'herdr', opts)
+  new HerdrStatusTracker(new Context(), client, 'herdr', {
+    // 默认注入 mock probe，避免依赖宿主机真实 herdr（CI runner 上没有 herdr）
+    probeServerFn: async (): Promise<HerdrServerInfo> => ({
+      status: 'running', running: true, version: '0.8.0', protocol: 19, socket: null, session: null, checked_at: 0,
+    }),
+    ...opts,
+  })
 
 const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms))
 

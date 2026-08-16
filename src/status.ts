@@ -125,10 +125,12 @@ export function probeServer(cliPath: string, execFn?: ExecFileFn): Promise<Herdr
 /**
  * 探测 herdr CLI：可执行存在即 available（--version 失败也算已安装，
  * 例如 Herdr pane 环境内 --version 行为异常；只有 ENOENT 视为未安装）。
+ * execFn 供测试注入（默认 execFile）。
  */
-export function probeCli(cliPath: string): Promise<HerdrCliInfo> {
+export function probeCli(cliPath: string, execFn?: ExecFileFn): Promise<HerdrCliInfo> {
+  const run = execFn ?? ((cmd, args, opts, cb) => execFile(cmd, args, opts, cb))
   return new Promise(resolve => {
-    execFile(cliPath, ['--version'], { timeout: 5000 }, (err, stdout) => {
+    run(cliPath, ['--version'], { timeout: 5000 }, (err, stdout) => {
       if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
         resolve({ available: false, path: cliPath })
         return
