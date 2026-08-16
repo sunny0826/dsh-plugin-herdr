@@ -10,7 +10,10 @@ import {
   HERDR_BRAND_LIGHT,
   HERDR_HERO_TEXT,
   HERDR_HERO_TEXT_BRAND,
+  HERDR_HERO_TEXT_BRAND_EN,
+  HERDR_HERO_TEXT_EN,
   HERDR_HERO_TEXT_PLAIN,
+  HERDR_HERO_TEXT_PLAIN_EN,
 } from '../../src/web/hero-branding.ts'
 
 test('hero branding: 文案常量与需求原文一致（漂移哨兵）', () => {
@@ -21,6 +24,14 @@ test('hero branding: 文案常量与需求原文一致（漂移哨兵）', () =>
 
 test('hero branding: 分段拼接 == 全文（aria-label 与视觉文案不漂移）', () => {
   assert.equal(HERDR_HERO_TEXT_BRAND + HERDR_HERO_TEXT_PLAIN, HERDR_HERO_TEXT)
+})
+
+test('hero branding: 英文文案常量一致（英文界面适配，§4.6）', () => {
+  assert.equal(HERDR_HERO_TEXT_EN, 'Herdr helps you explore the unknown')
+  assert.equal(HERDR_HERO_TEXT_BRAND_EN, 'Herdr helps you')
+  assert.equal(HERDR_HERO_TEXT_PLAIN_EN, 'explore the unknown')
+  // 英文分段拼接 == 全文（品牌段 + 空格 + 原样式段）
+  assert.equal(HERDR_HERO_TEXT_BRAND_EN + ' ' + HERDR_HERO_TEXT_PLAIN_EN, HERDR_HERO_TEXT_EN)
 })
 
 test('hero branding: 品牌紫 token 随主题（design §4.1，herdr.dev 官网 --spot 实测）', () => {
