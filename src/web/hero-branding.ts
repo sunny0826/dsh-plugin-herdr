@@ -21,6 +21,11 @@ export const HERDR_HERO_TEXT_BRAND_EN = 'Herdr helps you'
 /** 英文原样式段（前缀空格：两段由独立伪元素渲染，拼接需显式空格；中文无此问题）。 */
 export const HERDR_HERO_TEXT_PLAIN_EN = ' explore the unknown'
 
+/** herdr preset 显示名（preset.yml 的 name 是单字符串、DSH 无自定义 preset i18n；
+ *  hero 页 preset 芯片在英文界面由本模块 DOM 替换为英文，其余 surface 保持原样）。 */
+export const HERDR_PRESET_NAME_ZH = 'Herdr 模式'
+export const HERDR_PRESET_NAME_EN = 'Herdr mode'
+
 /** 品牌紫 token（styles.ts CSS 变量引用；取值 = herdr.dev 官网 site.css 的 --spot 实测，design §4.1）。 */
 export const HERDR_BRAND_LIGHT = '#8839ef' // herdr.dev paper 模式
 export const HERDR_BRAND_DARK = '#cba6f7' // herdr.dev ink 模式
@@ -50,6 +55,27 @@ export function setHerdrLang(lang: string): void {
   }
   for (const el of Array.from(document.querySelectorAll('.' + HEADLINE_CLASS))) {
     el.setAttribute('aria-label', heroTextForLang())
+  }
+  patchPresetChip()
+}
+
+/** hero 页 preset 芯片英文适配：仅当芯片显示 herdr preset 名时替换文本节点
+ *  （内置 preset 由 shell locale 自动翻译，不匹配不处理）；文本替换可逆，
+ *  React 重渲染重建后由 observer 重新应用。 */
+function patchPresetChip(): void {
+  for (const root of Array.from(document.querySelectorAll('[data-phase="hero"]'))) {
+    for (const btn of Array.from(root.querySelectorAll('button'))) {
+      const text = (btn.textContent ?? '').trim()
+      for (const node of Array.from(btn.childNodes)) {
+        if (node.nodeType !== Node.TEXT_NODE || node.textContent === null) continue
+        if (herdrLang === 'en' && node.textContent.includes(HERDR_PRESET_NAME_ZH)) {
+          node.textContent = node.textContent.replace(HERDR_PRESET_NAME_ZH, HERDR_PRESET_NAME_EN)
+        } else if (herdrLang !== 'en' && node.textContent.includes(HERDR_PRESET_NAME_EN)) {
+          node.textContent = node.textContent.replace(HERDR_PRESET_NAME_EN, HERDR_PRESET_NAME_ZH)
+        }
+      }
+      void text
+    }
   }
 }
 
@@ -93,12 +119,14 @@ export function startHeroBranding(): () => void {
     return () => {}
   }
   patchHero()
+  patchPresetChip()
   let raf = 0
   const observer = new MutationObserver(() => {
     if (raf) return
     raf = requestAnimationFrame(() => {
       raf = 0
       patchHero()
+      patchPresetChip()
     })
   })
   observer.observe(document.body, {
@@ -106,6 +134,7 @@ export function startHeroBranding(): () => void {
     subtree: true,
     attributes: true,
     attributeFilter: ['class'],
+    characterData: true, // 芯片文本替换属于 characterData 变更；React 重建走 childList
   })
   return () => {
     observer.disconnect()
