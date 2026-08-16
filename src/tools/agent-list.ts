@@ -8,14 +8,17 @@ const STATUSES = ['idle', 'working', 'blocked', 'done', 'unknown']
 
 export function renderAgentTable(agents: HerdrAgentInfo[]): string {
   if (agents.length === 0) return '(no agents detected)'
+  // agent 列显示自定义名（name；agent 字段是 kind 派生的显示名）——它是后续
+  // herdr_agent_prompt / herdr_agent_wait 的 target；kind 列给出底层类型
   const rows = agents.map(a => [
-    a.pane_id ?? '',
-    a.agent ?? '',
-    a.status ?? 'unknown',
-    a.message ?? '',
-    a.workspace_id ?? '',
+    String(a.pane_id ?? ''),
+    String(a.name ?? a.agent ?? ''),
+    String((a as { kind?: unknown }).kind ?? ''),
+    String(a.status ?? 'unknown'),
+    String(a.message ?? ''),
+    String(a.workspace_id ?? ''),
   ])
-  return renderTable(['pane', 'agent', 'status', 'message', 'workspace'], rows)
+  return renderTable(['pane', 'agent', 'kind', 'status', 'message', 'workspace'], rows)
 }
 
 export function registerAgentList(ctx: Context) {

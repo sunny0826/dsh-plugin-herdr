@@ -198,8 +198,9 @@ export class SocketHerdrClient extends HerdrClient {
       const agent = res?.agent
       return {
         kind: 'completed',
-        status: (agent?.agent_status ?? req.until[0]) as AgentStatus,
-        agent: agent?.agent ?? agent?.name ?? undefined,
+        status: (agent?.agent_status ?? req.until?.[0]) as AgentStatus,
+        // 返回可作 target 的自定义名（name 优先；agent 字段是 kind 派生显示名）
+        agent: agent?.name ?? agent?.agent ?? undefined,
         pane_id: agent?.pane_id ?? undefined,
         waited_ms: Date.now() - start,
       }
@@ -298,7 +299,9 @@ export class SocketHerdrClient extends HerdrClient {
       target: req.target,
       text: req.text,
       wait: req.wait
-        ? { until: req.until ?? null, timeout_ms: req.timeout_ms ?? null }
+        // CA：wait.until 协议不允许 null（数组），省略字段而非传 null——
+        // herdr server 对 until:null 校验失败会直接关闭连接（socket closed before response）
+        ? { ...(req.until ? { until: req.until } : {}), timeout_ms: req.timeout_ms ?? null }
         : null,
     }, { signal })
     // 协议 envelope：状态在 result.agent.agent_status（agent_prompted 分支，CA-004 生成类型）

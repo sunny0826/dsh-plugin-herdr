@@ -10,6 +10,8 @@ import { getBindingRegistry } from '../../src/binding-registry.ts'
 
 function makeHarness(herdr: Record<string, unknown>, snapAgents: Array<{ agent?: string | null }> = []) {
   herdr.snapshot = herdr.snapshot ?? (async () => ({ agents: snapAgents, panes: [] }))
+  // 启动后的就绪等待（agent.wait）；缺省立即 idle
+  herdr.waitAgent = herdr.waitAgent ?? (async () => ({ kind: 'completed', status: 'idle', waited_ms: 1 }))
   const defs: ToolDefinition[] = []
   const ctx = new Context()
   ctx.provide('tools', { register: (def: ToolDefinition) => { defs.push(def); return () => {} } })
@@ -89,6 +91,46 @@ test('agent-start: retries agent_pane_busy until the fresh pane shell is ready',
     assert.equal((res as { status: string }).status, 'idle', 'succeeded after busy retry')
   } finally {
     delete (globalThis as { __piRetried?: boolean }).__piRetried
+    getBindingRegistry().delete('sess-A')
+  }
+})
+
+test('agent-start: waits for agent ready when interactive_ready is not set', async () => {
+  let waited = 0
+  const { defs } = makeHarness({
+    paneSplit: async () => ({ pane_id: 'w1:p9' }),
+    agentStart: async () => ({ pane_id: 'w1:p9', agent: 'pi', agent_status: 'unknown' }),
+    waitAgent: async (req: Record<string, unknown>) => {
+      waited += 1
+      assert.equal(req.target, 'pi-1', 'waits on the started agent name')
+      assert.deepEqual(req.until, ['idle', 'working', 'blocked', 'done'])
+      return { kind: 'completed', status: 'idle', waited_ms: 100 }
+    },
+  })
+  getBindingRegistry().set('sess-A', { pane_id: 'w1:p5', created: true, workspace_id: 'w1' })
+  try {
+    const run = defs.find(d => d.name === 'herdr_agent_start')!
+    const res = await run.execute({ kind: 'pi', timeout_ms: 15000 }, agentExec)
+    assert.equal(waited, 1, 'waited for ready before returning')
+    assert.equal((res as { status: string }).status, 'unknown', 'returns the start-time status')
+  } finally {
+    getBindingRegistry().delete('sess-A')
+  }
+})
+
+test('agent-start: interactive_ready agents skip the wait', async () => {
+  let waited = 0
+  const { defs } = makeHarness({
+    paneSplit: async () => ({ pane_id: 'w1:p9' }),
+    agentStart: async () => ({ pane_id: 'w1:p9', agent: 'pi', agent_status: 'idle', interactive_ready: true }),
+    waitAgent: async () => { waited += 1; return { kind: 'completed', status: 'idle', waited_ms: 1 } },
+  })
+  getBindingRegistry().set('sess-A', { pane_id: 'w1:p5', created: true, workspace_id: 'w1' })
+  try {
+    const run = defs.find(d => d.name === 'herdr_agent_start')!
+    await run.execute({ kind: 'pi', timeout_ms: 15000 }, agentExec)
+    assert.equal(waited, 0, 'no wait when already interactive-ready')
+  } finally {
     getBindingRegistry().delete('sess-A')
   }
 })

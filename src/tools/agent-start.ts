@@ -103,6 +103,16 @@ export function registerAgentStart(ctx: Context) {
           }
         }
         const info: AgentInfo = await started()
+        // agent 启动初期可能尚未注册就绪（agent_start 返回 status unknown），
+        // 立即 prompt 会撞 agent_not_ready——等 agent.wait 观察到首个稳定状态
+        // 再返回；等待失败（超时/未找到）不阻塞，模型可再显式 herdr_agent_wait
+        if (info.interactive_ready !== true) {
+          await ctx.herdr.waitAgent({
+            target: req.name,
+            until: ['idle', 'working', 'blocked', 'done'],
+            timeout_ms: Math.min(req.timeout_ms ?? 30000, 30000),
+          }, exec.signal).catch(() => {})
+        }
         return {
           kind: args.kind,
           ...(info.pane_id ? { pane_id: info.pane_id } : {}),
