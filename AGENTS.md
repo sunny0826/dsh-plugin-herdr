@@ -4,7 +4,8 @@ Contributor guide for **dsh-plugin-herdr**, the Herdr control-plane plugin for D
 
 ## Project Structure & Module Organization
 
-- `src/` — TypeScript source: `index.ts` (server entry), `client-entry.ts` (client entry), `client.tsx` (Web panel), `tools/` (one file per `herdr_*` tool), `events/`, `client/` (transport backends), `assets/` (embedded skill).
+- `src/` — TypeScript source: `index.ts` (server entry), `client-entry.ts` (client entry), `tools/` (one file per `herdr_*` tool), `events/`, `client/` (transport backends), `assets/` (embedded skill), `client-logic.ts` (pure UI logic, node-testable), `session-mode.ts`, `preset-install.ts`.
+- `src/web/` — Web panel (client bundle): `app.tsx` (slot wiring), `herdr-view.tsx` / `pane-list.tsx` / `pane-card.tsx` (panel UI), `mode.ts` (herdr-mode gate, mirrors `html[data-herdr-mode]`), `tab-controller.ts` (Herdr tab DOM marking), `hero-branding.ts` (new-session hero branding: purple input-card border, herdr logo & split headline, MutationObserver marking), `styles.ts` (injected CSS), `logo-path.ts` (shared herdr logo path).
 - `test/` — `unit/` (`*.test.ts`), `integration/` (real-herdr `.mjs` scripts), `fixtures/` (herdr API schema).
 - `presets/herdr/` — the "Herdr 模式" agent preset; `scripts/` — codegen (`gen-types.mjs`, `embed-skill.mjs`).
 - `lib/` — build output (generated, gitignored); `cordis.patch.yml` — runtime plugin wiring.
@@ -30,7 +31,7 @@ Contributor guide for **dsh-plugin-herdr**, the Herdr control-plane plugin for D
 
 - Unit tests use `node:test` + `node:assert/strict`, one file per module, named `<module>.test.ts` under `test/unit/`.
 - Integration tests are plain `.mjs` scripts that preflight and SKIP gracefully (CA-009).
-- No coverage threshold is enforced; new behavior needs tests at the logic layer (visual items stay manually verified, CA-016).
+- No coverage threshold is enforced; new behavior needs tests at the logic layer (visual items stay manually verified, CA-016). Web-side constant drift sentinels (copy text / brand tokens) live in `test/unit/hero-branding.test.ts`; DOM-marking rules are covered by manual + browser verification (design docs archived under `docs/archive/`, gitignored).
 
 ## Commit & Pull Request Guidelines
 

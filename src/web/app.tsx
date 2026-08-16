@@ -6,6 +6,7 @@ import { setSessionIdReader } from './navigation.ts'
 import { HerdrPaneList, HerdrHeroStatus } from './pane-list.tsx'
 import { startModeTracking, type SessionListLike } from './mode.ts'
 import { startTabController } from './tab-controller.ts'
+import { startHeroBranding } from './hero-branding.ts'
 
 // 宽松类型桥：slots / sessions
 interface SlotsApi {
@@ -31,10 +32,13 @@ export function apply(ctx: ClientCtx) {
   })
   // herdr Tab 打标：DOM 显隐门控 + logo 样式锚点（观察 tablist 渲染与 React 重渲染）
   const stopTabController = startTabController()
+  // hero 标题打标：新会话页品牌化锚点（fish 座位 / 标题文本，design: herdr-hero-branding）
+  const stopHeroBranding = startHeroBranding()
   ctx.effect(() => () => {
     stopModeTracking?.()
     stopModeTracking = null
     stopTabController()
+    stopHeroBranding()
   })
 
   ctx.slots.inject('conversation.view', () =>
