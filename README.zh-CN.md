@@ -27,6 +27,11 @@ DeepSeek Harness（DSH）的 Herdr 控制面插件：在 DSH 会话中观察与�
 （面板的启动按钮会从 PATH 中拉起 `herdr server`——这是仅存的 CLI 调用，
 见「平台支持」）。
 
+`dsh plugin` 是 pnpm 的薄转发层：在 profile 目录
+（`$DSH_HOME/profiles/<名字>/`）内执行 `pnpm <参数>`，随后按实际安装结果
+对账 `dsh.profile.bundles` 层列表——本包声明了 `dsh.bundle.patch`，
+安装后即加入 profile 的 bundle 层（其 `cordis.patch.yml` 由此被应用）。
+
 ```sh
 # 本地目录
 dsh plugin --profile web add /path/to/dsh-plugin-herdr
@@ -35,17 +40,48 @@ dsh plugin --profile web add /path/to/dsh-plugin-herdr
 pnpm pack
 dsh plugin --profile web add ./dsh-plugin-herdr-*.tgz
 
-# git（锁定 commit；需要 pnpm allowBuilds 放行 prepare 脚本）
-dsh plugin --profile web add git+https://github.com/sunny0826/dsh-plugin-herdr.git#<commit>
+# git
+dsh plugin --profile web add github:sunny0826/dsh-plugin-herdr
 ```
 
 > **pnpm allowBuilds**：git 安装会执行包的 `prepare` 脚本。若 pnpm 拦截，
 > 将 pnpm 打印的 key 加入 `<profile>/pnpm-workspace.yaml` 的 `allowBuilds`
 > 后重试。
 
+可用 `dsh plugin --profile web list`（或
+`dsh plugin --profile web why dsh-plugin-herdr`）验证安装结果。
+
 安装后重启 profile。插件注册 `ctx.herdr`、工具与 Herdr 面板；「Herdr 模式」
 预设出现在新建会话的模式选择器中（首次加载时复制到
 `$DSH_HOME/.agent-presets/herdr/`）。
+
+## 卸载
+
+从 profile 中移除插件——`dsh plugin ... remove` 转发 `pnpm remove`，
+并同步把包从 `dsh.profile.bundles` 层列表中删除：
+
+```sh
+dsh plugin --profile web remove dsh-plugin-herdr
+```
+
+随后重启 profile：`herdr_*` 工具、`ctx.herdr`、Herdr 面板与 herdr 模式的
+接线全部消失。
+
+卸载会留下三处痕迹，可按需清理：
+
+- **agent preset**——「Herdr 模式」预设已复制到
+  `$DSH_HOME/.agent-presets/herdr/`，**不会**随卸载删除。它仍会出现在
+  新建会话的模式选择器中，但没有插件支撑时只是个空壳；手动删除：
+  `rm -rf "$DSH_HOME/.agent-presets/herdr"`。
+- **Herdr workspace**——herdr 模式会话拥有专属 `dsh:<项目名>` workspace，
+  会话结束时回收。卸载前先关闭进行中的 herdr 模式会话；残留的 workspace
+  可用 herdr CLI 手工关闭（`herdr workspace list` /
+  `herdr workspace close <id>`）。
+- **profile 配置**——在 profile 的 `cordis.patch.yml` 里加过的 herdr 配置
+  （如 `timeoutMs`）会变为无效条目；想要干净的 profile 请一并删除。
+
+重新安装只需再走一遍「安装」：bundle 层会重新加入，首次加载时 preset
+也会重新复制。
 
 ## 配置
 

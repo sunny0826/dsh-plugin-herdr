@@ -31,6 +31,12 @@ Prerequisites: a DSH profile (e.g. `web`) and a running herdr headless
 server (the panel's start button spawns `herdr server` from PATH — the only
 remaining CLI invocation, see "Platform support").
 
+`dsh plugin` is a thin pnpm forwarder: it runs `pnpm <args>` inside the
+profile directory (`$DSH_HOME/profiles/<name>/`), then reconciles the
+`dsh.profile.bundles` layer list against the installed state — this package
+declares `dsh.bundle.patch`, so installing it joins the profile's bundle
+layers (which is how its `cordis.patch.yml` gets applied).
+
 ```sh
 # local directory
 dsh plugin --profile web add /path/to/dsh-plugin-herdr
@@ -39,17 +45,50 @@ dsh plugin --profile web add /path/to/dsh-plugin-herdr
 pnpm pack
 dsh plugin --profile web add ./dsh-plugin-herdr-*.tgz
 
-# git (locked commit; requires pnpm allowBuilds for the prepare script)
-dsh plugin --profile web add git+https://github.com/sunny0826/dsh-plugin-herdr.git#<commit>
+# git
+dsh plugin --profile web add github:sunny0826/dsh-plugin-herdr
 ```
 
 > **pnpm allowBuilds**: git-hosted installs run the package `prepare` script.
 > If pnpm blocks it, add the exact key pnpm printed under `allowBuilds` in
 > `<profile>/pnpm-workspace.yaml`, then re-run.
 
+Verify the install with `dsh plugin --profile web list` (or
+`dsh plugin --profile web why dsh-plugin-herdr`).
+
 After install, restart the profile. The plugin registers `ctx.herdr`, the
 tools, and the Herdr panel; the "Herdr 模式" preset appears in the new-session
 picker (copied to `$DSH_HOME/.agent-presets/herdr/` on first load).
+
+## Uninstall
+
+Remove the plugin from the profile — `dsh plugin ... remove` forwards to
+`pnpm remove` and drops the package from the `dsh.profile.bundles` layer list
+in the same step:
+
+```sh
+dsh plugin --profile web remove dsh-plugin-herdr
+```
+
+Then restart the profile: the `herdr_*` tools, `ctx.herdr`, the Herdr panel,
+and the herdr-mode wiring are gone.
+
+The uninstall leaves three traces worth knowing about:
+
+- **Agent preset** — the "Herdr 模式" preset was copied to
+  `$DSH_HOME/.agent-presets/herdr/` and is **not** removed. It stays in the
+  new-session picker but is inert without the plugin; delete it manually:
+  `rm -rf "$DSH_HOME/.agent-presets/herdr"`.
+- **Herdr workspaces** — herdr-mode sessions own a dedicated
+  `dsh:<project>` workspace that is reclaimed when the session ends. Close
+  open herdr-mode sessions before uninstalling; any leftovers can be closed
+  from the herdr CLI (`herdr workspace list` / `herdr workspace close <id>`).
+- **Profile config** — herdr config entries you added to the profile's
+  `cordis.patch.yml` (e.g. `timeoutMs`) become inert; remove them for a clean
+  profile.
+
+Reinstalling is just the Install section again: the bundle layer is re-added
+and the preset is re-copied on first load.
 
 ## Configuration
 
