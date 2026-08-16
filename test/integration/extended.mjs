@@ -6,7 +6,7 @@ import { homedir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
 import { apply } from '../../lib/index.mjs'
 import { apply as applyClient } from '../../lib/client-entry.mjs'
-import { assertPreflight } from './preflight.mjs'
+import { assertPreflight, ensureWorkspace } from './preflight.mjs'
 
 // CA-009：前置条件（herdr CLI + lib 构建 + server running）；不满足 → 明确 SKIP
 assertPreflight()
@@ -46,6 +46,11 @@ const closePane = (id) => {
   ctx.provide('jobs', { start: () => 'herdr-1' })
   const cf = await ctx.plugin({ name: 'c', apply: applyClient, inject: [] }, BASE_CONFIG)
   const f = await ctx.plugin({ name: 'h', apply, inject: ['tools', 'herdr', 'jobs'] }, BASE_CONFIG)
+
+  // 全新 server 没有默认 workspace（CI runner 场景）：先确保存在，
+  // 否则下方 snapshot.panes 为空（首个 workspace create 检查会创建后立即关闭）
+  let closeWorkspace = () => {}
+  closeWorkspace = await ensureWorkspace(ctx.herdr)
 
   await check('workspace create', async () => {
     const r = await ctx.herdr.workspaceCreate({ label: 'dsh-m2-ext', cwd: HOME })
@@ -101,6 +106,7 @@ const closePane = (id) => {
   })
 
   for (const id of createdPanes) closePane(id)
+  closeWorkspace()
   await f.dispose()
   await cf.dispose()
 }
@@ -120,6 +126,10 @@ const closePane = (id) => {
     check('socket transport loads', () => { throw err })
     process.exit(failures === 0 ? 0 : 1)
   }
+
+  // 全新 server 没有默认 workspace（CI runner 场景）：先确保存在，split 才有目标
+  let closeWorkspace = () => {}
+  closeWorkspace = await ensureWorkspace(ctx.herdr)
 
   await check('socket transport loads and snapshots', async () => {
     const snap = await ctx.herdr.snapshot()
@@ -150,6 +160,7 @@ const closePane = (id) => {
     }
   }
 
+  closeWorkspace()
   await f.dispose()
   await cf.dispose()
 }
