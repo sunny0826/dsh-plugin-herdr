@@ -14,13 +14,6 @@ export const HERDR_HERO_TEXT_BRAND = 'Herdr 助你'
 /** 原样式段（styles.ts ::after content 引用）。 */
 export const HERDR_HERO_TEXT_PLAIN = '探索未知之境'
 
-/** 英文文案（styles.ts ::before/::after content 引用；对应「Herdr 助你探索未知之境」）。 */
-export const HERDR_HERO_TEXT_EN = 'Herdr helps you explore the unknown'
-/** 英文品牌特效段。 */
-export const HERDR_HERO_TEXT_BRAND_EN = 'Herdr helps you'
-/** 英文原样式段。 */
-export const HERDR_HERO_TEXT_PLAIN_EN = 'explore the unknown'
-
 /** 品牌紫 token（styles.ts CSS 变量引用；取值 = herdr.dev 官网 site.css 的 --spot 实测，design §4.1）。 */
 export const HERDR_BRAND_LIGHT = '#8839ef' // herdr.dev paper 模式
 export const HERDR_BRAND_DARK = '#cba6f7' // herdr.dev ink 模式
@@ -31,27 +24,6 @@ const FISH_VIEWBOX = '0 0 23.16 17.04'
 const FISH_CLASS = 'herdr-hero-fish'
 const TEXT_CLASS = 'herdr-hero-text'
 const HEADLINE_CLASS = 'herdr-hero-headline'
-const LANG_ATTR = 'data-herdr-lang'
-
-/** 当前界面语言（locale 服务 active，经 setHerdrLang 同步；默认 zh）。 */
-let herdrLang = 'zh'
-
-/** 当前语言的完整文案（aria-label 用）。 */
-function heroTextForLang(): string {
-  return herdrLang === 'en' ? HERDR_HERO_TEXT_EN : HERDR_HERO_TEXT
-}
-
-/** 同步界面语言（app.tsx 订阅 locale 服务调用）；已标记元素立即刷新。 */
-export function setHerdrLang(lang: string): void {
-  herdrLang = lang === 'en' ? 'en' : 'zh'
-  if (typeof document === 'undefined') return
-  for (const el of Array.from(document.querySelectorAll('.' + TEXT_CLASS))) {
-    el.setAttribute(LANG_ATTR, herdrLang)
-  }
-  for (const el of Array.from(document.querySelectorAll('.' + HEADLINE_CLASS))) {
-    el.setAttribute('aria-label', heroTextForLang())
-  }
-}
 
 /** 是否为「含直接文本节点、且无 svg 后代」的 span（标题文本识别规则，含回退）。 */
 function isTextSpan(el: Element): boolean {
@@ -72,18 +44,14 @@ function patchHero(): void {
     if (!(fishSeat instanceof HTMLElement) || !(headline instanceof HTMLElement)) continue
     fishSeat.classList.add(FISH_CLASS)
     headline.classList.add(HEADLINE_CLASS)
-    headline.setAttribute(LANG_ATTR, herdrLang)
-    if (!headline.getAttribute('aria-label')) headline.setAttribute('aria-label', heroTextForLang())
+    if (!headline.getAttribute('aria-label')) headline.setAttribute('aria-label', HERDR_HERO_TEXT)
     // 标题文本 span：fish 座位的下一个兄弟（DOM 顺序固定：fish 座位、标题文本、预览徽章）；
     // 回退：共同父容器内第一个「含直接文本节点且无 svg 后代」的元素
     let textEl = fishSeat.nextElementSibling
     if (!(textEl instanceof HTMLElement) || !isTextSpan(textEl)) {
       textEl = Array.from(headline.children).find(el => el instanceof HTMLElement && isTextSpan(el)) ?? null
     }
-    if (textEl instanceof HTMLElement) {
-      textEl.classList.add(TEXT_CLASS)
-      textEl.setAttribute(LANG_ATTR, herdrLang)
-    }
+    if (textEl instanceof HTMLElement) textEl.classList.add(TEXT_CLASS)
   }
 }
 

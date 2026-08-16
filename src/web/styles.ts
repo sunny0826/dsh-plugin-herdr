@@ -9,9 +9,7 @@ import {
   HERDR_BRAND_GLOW_LIGHT,
   HERDR_BRAND_LIGHT,
   HERDR_HERO_TEXT_BRAND,
-  HERDR_HERO_TEXT_BRAND_EN,
   HERDR_HERO_TEXT_PLAIN,
-  HERDR_HERO_TEXT_PLAIN_EN,
 } from './hero-branding.ts'
 
 const STYLE_ID = 'dsh-plugin-herdr-styles'
@@ -692,16 +690,6 @@ html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text::after {
 @keyframes herdr-text-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
-}
-
-/* 英文界面（design: herdr-hero-branding §4.6）：文案随 data-herdr-lang
-   （hero-branding.ts 按 locale 服务 active 设置；DSH 的 html lang 是静态的不可依赖）。
-   仅覆盖 content，动画/过渡参数沿用中文版。 */
-html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text[data-herdr-lang='en']::before {
-  content: '${HERDR_HERO_TEXT_BRAND_EN}';
-}
-html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text[data-herdr-lang='en']::after {
-  content: '${HERDR_HERO_TEXT_PLAIN_EN}';
 }
 
 /* 减弱动效偏好（prefers-reduced-motion）：关闭过渡与动画，切换即时生效 */

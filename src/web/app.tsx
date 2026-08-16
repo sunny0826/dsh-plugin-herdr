@@ -6,18 +6,12 @@ import { setSessionIdReader } from './navigation.ts'
 import { HerdrPaneList, HerdrHeroStatus } from './pane-list.tsx'
 import { startModeTracking, type SessionListLike } from './mode.ts'
 import { startTabController } from './tab-controller.ts'
-import { startHeroBranding, setHerdrLang } from './hero-branding.ts'
+import { startHeroBranding } from './hero-branding.ts'
 
-// 宽松类型桥：slots / sessions / locale
+// 宽松类型桥：slots / sessions
 interface SlotsApi {
   inject(name: string, register: () => unknown): unknown
   register(opts: Record<string, unknown>, Component: unknown): unknown
-}
-
-/** locale 服务的最小形状（LocaleFace 子集：getSnapshot + subscribe）。 */
-interface LocaleFaceLike {
-  getSnapshot(): { active?: string }
-  subscribe(fn: () => void): () => void
 }
 
 export interface ClientCtx {
@@ -40,22 +34,11 @@ export function apply(ctx: ClientCtx) {
   const stopTabController = startTabController()
   // hero 标题打标：新会话页品牌化锚点（fish 座位 / 标题文本，design: herdr-hero-branding）
   const stopHeroBranding = startHeroBranding()
-  // 界面语言跟踪：locale 服务 active → hero 文案（data-herdr-lang / aria-label）随语言切换
-  let stopLangTracking: (() => void) | null = null
-  ctx.inject(['locale'], (scope: unknown) => {
-    const locale = (scope as { locale?: LocaleFaceLike }).locale
-    if (!locale) return
-    const apply = () => setHerdrLang(locale.getSnapshot().active ?? 'zh')
-    apply()
-    stopLangTracking = locale.subscribe(apply)
-  })
   ctx.effect(() => () => {
     stopModeTracking?.()
     stopModeTracking = null
     stopTabController()
     stopHeroBranding()
-    stopLangTracking?.()
-    stopLangTracking = null
   })
 
   ctx.slots.inject('conversation.view', () =>
@@ -104,4 +87,4 @@ export function apply(ctx: ClientCtx) {
   )
 }
 
-export const inject = ['slots', 'locale']
+export const inject = ['slots']
