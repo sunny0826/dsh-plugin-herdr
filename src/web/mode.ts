@@ -62,3 +62,12 @@ export function useHerdrMode(): boolean {
 export function getHerdrMode(): boolean {
   return herdrMode
 }
+
+/**
+ * 全局 Dashboard 可用性（design: dashboard-global §3.2）：仅表达插件 browser half
+ * 已加载（入口应显示），不依赖 data-herdr-mode / server 状态 / preset 模式。当前
+ * 插件加载即可用；保留 hook 形态供未来可用性判定（如 socket 不可解析）接入。
+ */
+export function useGlobalDashboardAvailable(): boolean {
+  return true
+}

@@ -4,9 +4,22 @@ import type { ReactNode } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { t, useHerdrLang } from './i18n.ts'
 import { useHerdrStart } from './store.ts'
-import type { HerdrStatusSnapshot } from './types.ts'
 
-export function HerdrServerBanner({ snap, error, onStarted }: { snap: HerdrStatusSnapshot | null; error: string | null; onStarted?: () => void }) {
+/** 横幅可消费的最小快照形状（会话 /herdr-status 与 Dashboard DTO 均满足）。 */
+export interface BannerSnapLike {
+  server?: {
+    status: string
+    running: boolean
+    version: string | null
+    protocol: number | null
+    socket: string | null
+    session: string | null
+    checked_at: number
+  } | null
+  agents?: unknown[]
+}
+
+export function HerdrServerBanner({ snap, error, onStarted }: { snap: BannerSnapLike | null; error: string | null; onStarted?: () => void }) {
   // 语言订阅：切语言时状态文案/按钮跟随
   void useHerdrLang()
   const { starting, startError, start } = useHerdrStart()
@@ -41,7 +54,7 @@ export function HerdrServerBanner({ snap, error, onStarted }: { snap: HerdrStatu
         <span className="herdr-server-meta">
           {server.version ? `v${server.version}` : ''}
           {server.session ? ` · ${server.session}` : ''}
-          {snap ? ` · ${snap.agents.length} agent` : ''}
+          {snap?.agents?.length ? ` · ${snap.agents.length} agent` : ''}
         </span>
       </>
     )

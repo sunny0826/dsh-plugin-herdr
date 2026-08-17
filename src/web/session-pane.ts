@@ -13,3 +13,15 @@ export async function fetchSelfPaneId(sessionId: string): Promise<string | null>
     return null
   }
 }
+
+/** 反查 pane 所属会话（/herdr-pane-session）；无归属/查询失败返回 null。 */
+export async function fetchPaneSession(paneId: string): Promise<string | null> {
+  try {
+    const resp = await fetch('/herdr-pane-session?pane=' + encodeURIComponent(paneId))
+    if (!resp.ok) return null
+    const d = (await resp.json()) as { session_id?: string | null }
+    return d.session_id ?? null
+  } catch {
+    return null
+  }
+}

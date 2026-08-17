@@ -22,8 +22,26 @@ from DSH sessions.
 - **Open real agents**: `herdr_agent_start` starts a coding agent (pi / codex /
   claude) in the session workspace and waits until Herdr recognizes it; submit
   work with `herdr_agent_prompt` and wait with `herdr_agent_wait`.
-- **Server dashboard**: checks whether the headless Herdr server is running and
-  offers a one-click start button (new-session and session pages).
+- **Global Herdr Dashboard**: a machine-level read-only overview of the local
+  Herdr server (all workspaces across sessions/projects) — opened from the
+  left sidebar button **right under New Session**. The button is a DOM marker
+  injected into the sidebar's document flow between New Session and the
+  workspace/session browser (plugin-only, via the existing `shell.overlay`
+  slot host — no DSH changes required; a MutationObserver re-inserts it after
+  React re-renders/collapse), with a **status dot** (running / stopped /
+  not-installed / checking; reused from the shared `/herdr-status` poll).
+  Clicking opens a **full-height page covering the right work area** (from the
+  sidebar's right edge; the sidebar stays visible). The page shows
+  server/socket/host cards (process metrics merged into the Herdr server
+  card), a full agent-name list, and per-workspace **agent-kind treemaps**;
+  closing the page returns to the current conversation (header ✕ / Escape).
+  **Treemap blocks are clickable**: a block whose kind has exactly one agent
+  jumps to that pane in the current session's Herdr tab (the pane must belong
+  to the current DSH session — resolved via a reverse lookup
+  `/herdr-pane-session`); panes of other sessions (or unbound panes) keep the
+  panel open and show an inline notice instead. Workspace cards themselves are
+  not clickable (blank areas and the header row do nothing) — everything stays
+  strictly read-only with no cross-session navigation.
 
 ## Install
 
@@ -206,6 +224,9 @@ The conversation-page Herdr tab and the right-side floating pane list are
 **scoped to the current session** (mode-gated: hidden entirely outside
 herdr 模式):
 
+- **Panes view**: the Herdr tab shows only the session's dedicated workspace
+  and its panes (the global dashboard lives in the left sidebar — see above;
+  the old in-tab Dashboard sub-view/button has been removed).
 - **Session workspace only**: both views show just the session's dedicated
   workspace and its panes (no project/all scope toggle — that concept is gone).
 - **Two-column cards + drag sort**: panes render as a two-column grid; dragging
@@ -228,12 +249,15 @@ herdr 模式):
 
 - All actions are local to your machine; the plugin talks to the local herdr
   socket (the only subprocess spawn is the optional server-start bootstrap).
-- The panel endpoints (`/herdr-status`, `/herdr-start`,
-  `/herdr-session-pane`, `/herdr-close`, `/herdr-rename`) are plain HTTP on
+- The panel endpoints (`/herdr-status`, `/herdr-dashboard`, `/herdr-start`,
+  `/herdr-session-pane`, `/herdr-pane-session`, `/herdr-close`,
+  `/herdr-rename`) are plain HTTP on
   the local web server — do not expose the DSH web port publicly. They are
   additionally guarded (CA-007):
-  - strict methods: `/herdr-status` & `/herdr-session-pane` are GET-only,
-    `/herdr-start`, `/herdr-close` & `/herdr-rename` are POST-only
+  - strict methods: `/herdr-status`, `/herdr-dashboard`, `/herdr-session-pane`
+    & `/herdr-pane-session`
+    are GET-only (read-only), `/herdr-start`, `/herdr-close` & `/herdr-rename`
+    are POST-only
     (otherwise `405 + Allow`);
   - local-context only: `Host` must be `localhost`/`127.0.0.1`/`::1`
     (DNS-rebinding defense); cross-site `Origin` or `Sec-Fetch-Site: cross-site`

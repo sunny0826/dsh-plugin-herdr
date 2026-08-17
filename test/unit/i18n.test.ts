@@ -67,3 +67,16 @@ test('setHerdrLang notifies listeners and skips no-op updates', () => {
   setHerdrLang('en')
   assert.equal(getHerdrLang(), 'en')
 })
+
+test('dashboard keys: bilingual sanity + template params', () => {
+  setHerdrLang('zh')
+  assert.equal(t('global.title'), 'Herdr 仪表盘')
+  assert.equal(t('dashboard.lastUpdated', { time: '12:00:00' }), '最近更新：12:00:00')
+  setHerdrLang('en')
+  assert.equal(t('global.title'), 'Herdr Dashboard')
+  assert.equal(t('dashboard.unavailable'), 'Unavailable')
+  assert.equal(t('dashboard.lastUpdated', { time: '12:00:00' }), 'Last updated: 12:00:00')
+  assert.equal(t('dashboard.versionProtocol'), 'Version · Protocol')
+  assert.equal(t('dashboard.sampledHint', { time: '14:32:05' }), 'sampled at 14:32:05')
+  setHerdrLang('zh')
+})

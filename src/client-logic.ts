@@ -406,3 +406,499 @@ export function filterGroupsToSession(
   return buildGroups(topology).filter(g => g.workspace.workspace_id === pane.workspace_id)
 }
 
+// ---------------------------------------------------------------------------
+// Herdr Dashboard 聚合（design: dashboard —— 本机只读控制面总览）。
+// 纯函数：服务端 DTO 装配（src/dashboard.ts）与 Web 面板共用，node:test 直接覆盖。
+// 脱敏约定：完整本地路径只以 basename 进入 DTO（pathBase），不泄露 cwd/socket 绝对路径。
+// ---------------------------------------------------------------------------
+
+/** agent 状态展示优先级（其余状态按字母序追加）。 */
+const AGENT_STATUS_ORDER = ['working', 'blocked', 'idle', 'done', 'unknown'] as const
+
+/** 按 agent 状态计数（缺失/空字符串归 unknown；空数组返回空对象）。 */
+export function agentStatusCounts(agents: ReadonlyArray<{ status?: string | null }>): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const a of agents) {
+    const s = a.status || 'unknown'
+    counts[s] = (counts[s] ?? 0) + 1
+  }
+  return counts
+}
+
+/** 状态计数 → 稳定排序的 [status, count] 数组（working/blocked/idle/done/unknown 优先，其余按字母序；仅 >0）。 */
+export function sortedStatusCounts(counts: Record<string, number>): Array<[string, number]> {
+  const priority = AGENT_STATUS_ORDER.filter(k => (counts[k] ?? 0) > 0)
+  const rest = Object.keys(counts).filter(k => !(AGENT_STATUS_ORDER as readonly string[]).includes(k)).sort()
+  return [...priority, ...rest].map(k => [k, counts[k] ?? 0] as [string, number])
+}
+
+/**
+ * 路径 → basename（脱敏：Dashboard 只展示 basename，不把完整本地路径写入 DTO/日志）。
+ * ''/'/'/尾斜杠 → null；'a' → 'a'；'/a/b' → 'b'；'a\\b' → 'b'。
+ */
+export function pathBase(p: string | null | undefined): string | null {
+  if (!p) return null
+  const cleaned = p.replace(/[\\/]+$/, '')
+  if (!cleaned) return null
+  const idx = Math.max(cleaned.lastIndexOf('/'), cleaned.lastIndexOf('\\'))
+  const base = idx >= 0 ? cleaned.slice(idx + 1) : cleaned
+  return base === '' ? null : base
+}
+
+/** 字节 → 人类可读（B/KB/MB/GB/TB；缺失/非法返回 null → UI 显示 Unavailable，绝不显示伪造 0）。 */
+export function formatBytes(bytes: number | null | undefined): string | null {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return null
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let v = bytes / 1024
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1 }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
+/** 时长 → 人类可读（ms/s/m/h；缺失/非法返回 null）。 */
+export function formatDuration(ms: number | null | undefined): string | null {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return null
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return s % 60 === 0 ? `${m}m` : `${m}m ${s % 60}s`
+  const h = Math.floor(m / 60)
+  return m % 60 === 0 ? `${h}h` : `${h}h ${m % 60}m`
+}
+
+/** stale 派生：从未成功刷新（updatedAt=0）或距最近成功刷新超过阈值。 */
+export function deriveStale(updatedAt: number, now: number, thresholdMs: number): boolean {
+  return updatedAt === 0 || now - updatedAt > thresholdMs
+}
+
+/** 进程探测节流判定：从未探测或距上次探测 ≥ interval → 重新探测（纯函数，可测）。 */
+export function shouldProbeNow(lastProbeAt: number, now: number, probeIntervalMs: number): boolean {
+  return lastProbeAt === 0 || now - lastProbeAt >= probeIntervalMs
+}
+
+/** agent 明细（v4：全局 agent 视图与 Treemap 的数据源）。 */
+export interface DashboardAgentDetail {
+  pane_id: string
+  /** 自定义名称（target）；缺失时展示回退 name/kind。 */
+  name?: string
+  /** best-effort kind（回退链 kind → agent → unknown；协议兼容推断）。 */
+  kind: string
+  status: string
+}
+
+/** 单个 workspace 的 Dashboard 聚合记录（服务端 DTO 与 Web 镜像类型共用）。 */
+export interface DashboardWorkspaceAgg {
+  workspace_id: string
+  label: string | null
+  /** 脱敏：checkout_path 的 basename（原始绝对路径不进入 DTO）。 */
+  checkout_path_base: string | null
+  tab_count: number
+  pane_count: number
+  agent_count: number
+  agents_working: number
+  agents_blocked: number
+  /** v4：workspace 内 agent 明细（同一份数据服务名称列表/Treemap/tooltip）。 */
+  agents: DashboardAgentDetail[]
+}
+
+/** 聚合输入的最小 workspace 形状。 */
+export interface DashboardWorkspaceLike {
+  workspace_id?: string
+  label?: string | null
+  checkout_path?: string | null
+}
+
+/** 聚合输入的最小拓扑形状（同时兼容服务端 status.ts 拓扑与 Web 镜像类型）。 */
+export interface DashboardTopologyLike {
+  workspaces: ReadonlyArray<DashboardWorkspaceLike>
+  tabs: ReadonlyArray<{ workspace_id?: string }>
+  panes: ReadonlyArray<{ pane_id?: string; workspace_id?: string }>
+}
+
+/** 聚合输入的最小 agent 形状。 */
+export interface DashboardAgentLike {
+  pane_id?: string | null
+  workspace_id?: string | null
+  name?: string | null
+  kind?: string | null
+  agent?: string | null
+  status?: string | null
+}
+
+/**
+ * kind 归一化（v4）：kind → agent → unknown 回退链。name 是自定义 target，
+ * 不得当 kind 用（协议无正式 kind 字段，此为兼容推断）。
+ */
+export function normalizeAgentKind(kind: string | null | undefined, agent: string | null | undefined): string {
+  if (kind && kind.trim() !== '') return kind
+  if (agent && agent.trim() !== '') return agent
+  return 'unknown'
+}
+
+/**
+ * workspace 聚合：tabs/panes/agents 计数 + agent 状态汇总 + agent 明细挂载。
+ * - agent 归属优先 workspace_id；缺失时按 pane_id 反查 topology（协议兼容降级）；
+ * - 缺失/未知状态归 unknown；workspace_id 缺失的 pane/agent 忽略；
+ * - 结果按 workspace_id 自然排序（w2 < w10）。
+ */
+export function aggregateDashboardWorkspaces(
+  topology: DashboardTopologyLike,
+  agents: ReadonlyArray<DashboardAgentLike>,
+): DashboardWorkspaceAgg[] {
+  const tabCount = new Map<string, number>()
+  for (const t of topology.tabs) {
+    if (!t.workspace_id) continue
+    tabCount.set(t.workspace_id, (tabCount.get(t.workspace_id) ?? 0) + 1)
+  }
+  const panesByWs = new Map<string, Array<{ pane_id?: string }>>()
+  const wsByPane = new Map<string, string>()
+  for (const p of topology.panes) {
+    if (!p.workspace_id) continue
+    const arr = panesByWs.get(p.workspace_id) ?? []
+    arr.push(p)
+    panesByWs.set(p.workspace_id, arr)
+    if (p.pane_id) wsByPane.set(p.pane_id, p.workspace_id)
+  }
+  const wsAgents = new Map<string, DashboardAgentDetail[]>()
+  for (const a of agents) {
+    if (!a.pane_id) continue
+    const wsId = a.workspace_id ?? wsByPane.get(a.pane_id)
+    if (!wsId) continue
+    const arr = wsAgents.get(wsId) ?? []
+    arr.push({
+      pane_id: a.pane_id,
+      name: a.name ?? undefined,
+      kind: normalizeAgentKind(a.kind, a.agent),
+      status: a.status || 'unknown',
+    })
+    wsAgents.set(wsId, arr)
+  }
+  return topology.workspaces
+    .filter((w): w is DashboardWorkspaceLike & { workspace_id: string } => Boolean(w.workspace_id))
+    .map(w => {
+      const id = w.workspace_id
+      const panes = panesByWs.get(id) ?? []
+      const agentsOfWs = wsAgents.get(id) ?? []
+      const counts = agentStatusCounts(agentsOfWs.map(a => ({ status: a.status })))
+      return {
+        workspace_id: id,
+        label: w.label ?? null,
+        checkout_path_base: pathBase(w.checkout_path),
+        tab_count: tabCount.get(id) ?? 0,
+        pane_count: panes.length,
+        agent_count: agentsOfWs.length,
+        agents_working: counts['working'] ?? 0,
+        agents_blocked: counts['blocked'] ?? 0,
+        agents: agentsOfWs,
+      }
+    })
+    .sort((a, b) => compareWorkspaceId(a.workspace_id, b.workspace_id))
+}
+
+/**
+ * 全局 agent 收集（v4 需求 4）：合并所有 workspace 的 agent 明细并稳定排序
+ * kind → name → pane_id（轮询顺序变化不造成视觉抖动）。
+ */
+export function collectDashboardAgents(workspaces: ReadonlyArray<Pick<DashboardWorkspaceAgg, 'agents'>>): DashboardAgentDetail[] {
+  const all = workspaces.flatMap(w => w.agents ?? [])
+  return all.sort((a, b) => {
+    const k = a.kind.localeCompare(b.kind)
+    if (k !== 0) return k
+    const n = (a.name ?? '').localeCompare(b.name ?? '')
+    if (n !== 0) return n
+    return a.pane_id.localeCompare(b.pane_id)
+  })
+}
+
+/** workspace agent kind → 计数（Treemap 输入；按计数降序）。 */
+export function agentKindCounts(agents: ReadonlyArray<Pick<DashboardAgentDetail, 'kind'>>): Array<{ kind: string; value: number }> {
+  const counts = new Map<string, number>()
+  for (const a of agents) {
+    counts.set(a.kind, (counts.get(a.kind) ?? 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([kind, value]) => ({ kind, value }))
+    .sort((a, b) => b.value - a.value || a.kind.localeCompare(b.kind))
+}
+
+/** Dashboard 汇总计数（workspaces/tabs/panes/agents + 状态分布）。 */
+export interface DashboardSummaryLike {
+  workspaces: number
+  tabs: number
+  panes: number
+  agents: number
+  agents_by_status: Record<string, number>
+}
+
+/** 汇总：总数 + agent 状态分布（同一轮归一化快照内计算，避免跨时间点）。 */
+export function buildDashboardSummary(
+  workspaces: ReadonlyArray<Pick<DashboardWorkspaceAgg, 'tab_count' | 'pane_count'>>,
+  agents: ReadonlyArray<DashboardAgentLike>,
+): DashboardSummaryLike {
+  return {
+    workspaces: workspaces.length,
+    tabs: workspaces.reduce((n, w) => n + w.tab_count, 0),
+    panes: workspaces.reduce((n, w) => n + w.pane_count, 0),
+    agents: agents.length,
+    agents_by_status: agentStatusCounts(agents),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 全局 Dashboard 打开状态（design: dashboard-global §7.1）。
+// createGlobalDashboardStore：可测的显式 store（非模块级 open flag）；多个入口
+// （sidebar 按钮 / 旧 Herdr tab 降级按钮）共享同一实例，订阅即反映切换。
+// ---------------------------------------------------------------------------
+
+export interface GlobalDashboardStore {
+  /** 订阅打开状态；返回退订函数（无 DOM/React 依赖）。 */
+  subscribe(listener: () => void): () => void
+  getOpen(): boolean
+  open(): void
+  close(): void
+  toggle(): void
+}
+
+/** 全局面板打开状态 store（纯逻辑；React 侧用 useSyncExternalStore 订阅）。 */
+export function createGlobalDashboardStore(): GlobalDashboardStore {
+  let open = false
+  const listeners = new Set<() => void>()
+  const emit = () => {
+    for (const l of [...listeners]) l()
+  }
+  const set = (next: boolean) => {
+    if (next === open) return // 幂等：无变化不通知
+    open = next
+    emit()
+  }
+  return {
+    subscribe: listener => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    getOpen: () => open,
+    open: () => set(true),
+    close: () => set(false),
+    toggle: () => set(!open),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// marker 服务状态派生（v4 需求 2：运行中/已停止/未安装/检查中三态 + 中性诊断态）。
+// 数据源复用 statusStore 快照（/herdr-status 单飞轮询；marker 不另起全量轮询）。
+// ---------------------------------------------------------------------------
+
+/** marker 状态点语义（视觉色 + i18n 文本）。 */
+export type MarkerServerState = 'running' | 'stopped' | 'not-installed' | 'checking'
+
+/**
+ * 三态派生：running（server.running）；not_running + installation=missing →
+ * not-installed；not_running → stopped；无快照/unknown/HTTP 失败 → checking。
+ * 不得把任意 fetch 失败误判为 stopped/not-installed。
+ */
+export function deriveMarkerServerState(snap: {
+  server?: { running?: boolean; status?: string; installation?: string }
+} | null): MarkerServerState {
+  if (!snap?.server) return 'checking'
+  const server = snap.server
+  if (server.running === true) return 'running'
+  if (server.status === 'not_running') {
+    return server.installation === 'missing' ? 'not-installed' : 'stopped'
+  }
+  return 'checking'
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard pane → 会话跳转能力（v4 交互：Treemap 块点击跳转当前会话 pane）。
+// derivePaneNavState：pane 归属（/herdr-pane-session 反查）vs 当前 DSH 会话。
+// 纯函数，node:test 直测；React 组件只负责调用与提示。
+// ---------------------------------------------------------------------------
+
+/** pane 跳转能力派生：self（属于当前会话可跳转）| foreign（其他会话）| unbound（无归属）。 */
+export type PaneNavState = 'self' | 'foreign' | 'unbound'
+
+export function derivePaneNavState(
+  selfSessionId: string | undefined,
+  paneSessionId: string | null | undefined,
+): PaneNavState {
+  if (!paneSessionId) return 'unbound'
+  if (selfSessionId && paneSessionId === selfSessionId) return 'self'
+  return 'foreign'
+}
+
+// ---------------------------------------------------------------------------
+// workspace agent kind Treemap（v4 需求 7：外层 workspace 卡片 + 内部 kind 矩形）。
+// 纯函数：kind 计数 + 矩形布局（简化 squarify）；面积守恒、无负尺寸、排序稳定。
+// ---------------------------------------------------------------------------
+
+export interface TreemapItem {
+  key: string
+  value: number
+}
+
+export interface TreemapRect {
+  key: string
+  value: number
+  x: number
+  y: number
+  width: number
+  height: number
+  /** 占 workspace agent 总数的比例（0..1；tooltip 展示用）。 */
+  ratio: number
+}
+
+/**
+ * 矩形树图布局（简化 squarify）：按 value 降序，贪心把块加入一行直到行内最差
+ * 宽高比恶化再换行；行沿区域最长边方向铺排。处理 total=0/空输入/单块/极端比例。
+ * 不读取 DOM、不依赖 React。
+ */
+export function layoutTreemap(items: ReadonlyArray<TreemapItem>, width: number, height: number): TreemapRect[] {
+  const positive = items.filter(i => Number.isFinite(i.value) && i.value > 0)
+  if (positive.length === 0 || width <= 0 || height <= 0) return []
+  const sorted = [...positive].sort((a, b) => b.value - a.value || a.key.localeCompare(b.key))
+  const out: TreemapRect[] = []
+  const stack: Array<{ x: number; y: number; w: number; h: number; items: TreemapItem[] }> = [
+    { x: 0, y: 0, w: width, h: height, items: sorted },
+  ]
+  while (stack.length > 0) {
+    const region = stack.pop()!
+    const { x, y, w, h, items } = region
+    if (items.length === 0 || w <= 0 || h <= 0) continue
+    const total = items.reduce((s, it) => s + it.value, 0)
+    if (total <= 0) continue
+    const horizontal = w >= h
+    const main = horizontal ? w : h
+    const side = horizontal ? h : w
+    const worst = (n: number): number => {
+      const sum = items.slice(0, n).reduce((s, it) => s + it.value, 0)
+      if (sum <= 0) return Number.POSITIVE_INFINITY
+      const thick = side * sum / total
+      let worstVal = 0
+      for (const it of items.slice(0, n)) {
+        const len = main * it.value / sum
+        worstVal = Math.max(worstVal, Math.max(len / thick, thick / len))
+      }
+      return worstVal
+    }
+    let rowLen = 1
+    while (rowLen < items.length && worst(rowLen + 1) <= worst(rowLen)) rowLen++
+    const row = items.slice(0, rowLen)
+    const sum = row.reduce((s, it) => s + it.value, 0)
+    const rowThick = side * sum / total
+    let cursor = 0
+    for (const it of row) {
+      const len = main * it.value / sum
+      out.push(horizontal
+        ? { key: it.key, value: it.value, x: x + cursor, y, width: len, height: rowThick, ratio: it.value / total }
+        : { key: it.key, value: it.value, x, y: y + cursor, width: rowThick, height: len, ratio: it.value / total })
+      cursor += len
+    }
+    const rest = items.slice(rowLen)
+    if (rest.length > 0) {
+      stack.push(horizontal
+        ? { x, y: y + rowThick, w, h: h - rowThick, items: rest }
+        : { x: x + rowThick, y, w: w - rowThick, h, items: rest })
+    }
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// 侧栏 marker 注入与 surface 边界（design: dashboard-global v3 —— 插件-only）。
+// 按钮进入 sidebar 文档流（marker 插到 regionArea 之前），不悬浮不遮挡；
+// surface 从 sidebar 右边界覆盖整个右侧工作区。纯函数可 node:test 直接覆盖；
+// DOM 查询/observer 留在组件层。
+// ---------------------------------------------------------------------------
+
+/** rail 态 36x36 控件盒（对齐 DSH sidebar 的 rail spec）。 */
+export const SIDEBAR_RAIL_WIDTH = 36
+/** 锚点宽度 ≤ 此值判定为 rail（rail capsule 36px；wide 全宽行 ≥100px）。 */
+export const SIDEBAR_RAIL_WIDTH_THRESHOLD = 60
+
+/** New Session 锚点选择器（主：CSS module 类名子串；兜底：双语 aria-label）。 */
+export const NEW_SESSION_SELECTORS = [
+  '[class*="newSession"]',
+  '[aria-label="新建会话"]',
+  '[aria-label="New session"]',
+] as const
+
+/** workspace/session 浏览区（sidebar.workspaces 渲染容器）选择器。 */
+export const REGION_AREA_SELECTOR = '[class*="regionArea"]'
+/** marker 根元素标识（防重复注入与 DOM 定位）。 */
+export const SIDEBAR_MARKER_DATA = 'data-herdr-sidebar-button'
+
+/** 锚点宽度 → 是否 rail（窄栏/折叠态；marker 按钮形态据此切换）。 */
+export function isSidebarRail(anchorWidth: number): boolean {
+  return anchorWidth <= SIDEBAR_RAIL_WIDTH_THRESHOLD
+}
+
+/** marker 注入合法性判定结果。 */
+export interface SidebarMarkerResolution {
+  ok: boolean
+  /** ok=false 时的诊断原因（不注入，避免误插/孤儿按钮）。 */
+  reason: 'no-anchor' | 'no-region-area' | 'not-same-sidebar' | null
+}
+
+/** marker 按钮 aria-pressed 值派生（open → 'true'；原生 DOM 按钮非 React，由订阅同步）。 */
+export function deriveMarkerPressed(open: boolean): 'true' | 'false' {
+  return open ? 'true' : 'false'
+}
+
+/**
+ * marker 注入校验（P1-1：祖先关系而非严格同父）。
+ * regionArea 由 DSH SidebarRoot 直接管理；New Session 按钮可能被 Tooltip 等
+ * 包装节点包裹（当前 primitives Tooltip 用 cloneElement 无包装节点，但未来包装
+ * 变化不应破坏注入），因此用 `contains(regionParent, anchor)` 祖先关系判定两者
+ * 属于同一 sidebar root；插入点恒为 regionParent 上的 regionArea 之前。
+ */
+export function resolveSidebarMarker(
+  regionParent: unknown,
+  anchor: unknown,
+  contains: (container: unknown, node: unknown) => boolean,
+): SidebarMarkerResolution {
+  if (regionParent == null) return { ok: false, reason: 'no-region-area' }
+  if (anchor == null) return { ok: false, reason: 'no-anchor' }
+  if (!contains(regionParent, anchor)) return { ok: false, reason: 'not-same-sidebar' }
+  return { ok: true, reason: null }
+}
+
+/** surface 左边界测量输入（sidebar column 可见 rect 或 null=测量失败）。 */
+export interface SidebarColumnRect {
+  left: number
+  right: number
+}
+
+/** 右侧工作区 surface 的 fixed 边界（不覆盖 sidebar）。 */
+export interface GlobalSurfaceBounds {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/**
+ * surface 边界：left = sidebar 右缘（不覆盖 sidebar）；top/height 全高。
+ * 测量失败（sidebar 不可见）→ 全屏覆盖：保证 surface 完整可读、关闭入口
+ * （关闭按钮/Escape）始终可用；sidebar 恢复后由 observer 重测回退。
+ */
+export function computeGlobalSurfaceBounds(
+  sidebar: SidebarColumnRect | null,
+  viewportWidth: number,
+  viewportHeight: number,
+): GlobalSurfaceBounds {
+  if (sidebar === null) {
+    return { left: 0, top: 0, width: viewportWidth, height: viewportHeight }
+  }
+  const left = sidebar.right
+  return {
+    left,
+    top: 0,
+    width: Math.max(0, viewportWidth - left),
+    height: viewportHeight,
+  }
+}
+
