@@ -7,6 +7,7 @@ import { HerdrPaneList, HerdrHeroStatus } from './pane-list.tsx'
 import { startModeTracking, type SessionListLike } from './mode.ts'
 import { startTabController } from './tab-controller.ts'
 import { startHeroBranding, setHerdrLang } from './hero-branding.ts'
+import { SidebarButtonHost } from './global-dashboard.tsx'
 
 // 宽松类型桥：slots / sessions / locale
 interface SlotsApi {
@@ -67,6 +68,20 @@ export function apply(ctx: ClientCtx) {
         label: () => 'Herdr',
       },
       HerdrView,
+    ),
+  )
+  // 全局 Dashboard 入口（design: dashboard-global v3 —— 插件-only）：宿主组件注册到
+  // 既有 shell.overlay，自身无可见 DOM（返回 null），副作用为 ① 把按钮 marker 注入
+  // sidebar 文档流（New Session 与 regionArea 之间）；② open 时渲染右侧工作区 surface。
+  // 宿主未声明（极端老版本）时 inject 不执行 → 无按钮，优雅降级。按钮不常驻发请求。
+  ctx.slots.inject('shell.overlay', () =>
+    ctx.slots.register(
+      {
+        name: 'shell.overlay',
+        id: 'herdr-dashboard',
+        order: 10,
+      },
+      SidebarButtonHost,
     ),
   )
   // 会话页 header 状态胶囊

@@ -26,3 +26,13 @@ export type {
   HerdrTopology,
   HerdrStatusSnapshot,
 } from './web/types.ts'
+export type {
+  HerdrDashboardSnapshot,
+  HerdrDashboardSummary,
+  HerdrDashboardWorkspace,
+  HerdrDashboardAgent,
+  HerdrDashboardHost,
+  HerdrDashboardProcess,
+  HerdrDashboardConnection,
+  HerdrDashboardServerInfo,
+} from './web/dashboard-types.ts'

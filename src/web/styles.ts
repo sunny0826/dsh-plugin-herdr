@@ -717,6 +717,434 @@ html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text[data-herdr-lang='
   }
 }
 
+/* ── Herdr Dashboard（design: dashboard §5.5；全部使用 DSH herdr-*/dsw-alias-* token） ── */
+.herdr-dash {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 10px 16px 24px; box-sizing: border-box;
+}
+/* 摘要卡片网格：窄屏自动单列 */
+.herdr-dash-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+.herdr-dash-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px; border-radius: 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+  min-width: 0;
+}
+.herdr-dash-card-title {
+  font-size: 12px; line-height: 18px; font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+.herdr-dash-row {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+}
+.herdr-dash-row-label { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary); flex: none; }
+.herdr-dash-row-value {
+  font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.herdr-dash-code {
+  font-family: var(--ds-font-family-code); font-size: 11px;
+}
+.herdr-dash-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-module-platform);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+}
+.herdr-dash-chip b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.herdr-dash-chip[data-state='working'] { color: var(--dsw-alias-state-business-primary); }
+.herdr-dash-chip[data-state='blocked'] { color: var(--dsw-alias-state-error-primary); }
+.herdr-dash-chip[data-state='idle'] { color: var(--dsw-alias-state-success-primary); }
+/* 数据新鲜度行 */
+.herdr-dash-fresh {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary);
+  min-width: 0;
+}
+.herdr-dash-stale-badge {
+  font-size: 11px; line-height: 16px; font-weight: 600; flex: none;
+  color: var(--dsw-alias-state-warn-label);
+  background: var(--dsw-alias-state-warn-tertiary);
+  border: 1px solid var(--dsw-alias-state-warn-secondary);
+  border-radius: 999px; padding: 0 8px;
+}
+.herdr-dash-last-error {
+  font-size: 11px; color: var(--dsw-alias-state-error-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.herdr-dash-actions { margin-left: auto; flex: none; }
+/* workspace 列表 */
+.herdr-dash-section { display: flex; flex-direction: column; gap: 6px; }
+.herdr-dash-section-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; line-height: 18px; font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+.herdr-dash-section-count {
+  margin-left: auto; font-size: 11px; line-height: 16px; font-weight: 400;
+  color: var(--dsw-alias-label-tertiary);
+}
+.herdr-dash-ws {
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+.herdr-dash-ws + .herdr-dash-ws { margin-top: 6px; }
+/* workspace 卡片不可点击（关闭 surface 由 header ✕ 承担） */
+.herdr-dash-ws-card {
+  padding: 8px 12px 10px;
+  transition: border-color .15s var(--ds-ease-in-out), background .15s var(--ds-ease-in-out);
+}
+.herdr-dash-ws-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 0 6px;
+  user-select: none;
+}
+.herdr-dash-ws-label {
+  font-size: 13px; line-height: 20px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.herdr-dash-ws-id {
+  font-family: var(--ds-font-family-code); font-size: 11px; line-height: 16px; flex: none;
+  color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-module-platform);
+  border-radius: 5px; padding: 0 6px;
+}
+.herdr-dash-ws-meta {
+  margin-left: auto; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap; flex: none;
+}
+.herdr-dash-ws-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+/* ── agent-kind Treemap（v4 需求 7；kind 色 token 映射，无硬编码色） ── */
+.herdr-tm {
+  position: relative;
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-module-platform);
+  outline: none;
+}
+.herdr-tm-block {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-bg-layer-1);
+  border-radius: 4px;
+  background: var(--dsw-alias-label-tertiary);
+  /* 可点击跳转（pane → 对应会话 Herdr Tab） */
+  cursor: pointer;
+}
+.herdr-tm-block:hover,
+.herdr-tm-block:focus-visible {
+  filter: brightness(1.15);
+  outline: 2px solid var(--dsw-alias-state-focus-ring, var(--dsw-alias-state-info-primary));
+  outline-offset: 1px;
+}
+.herdr-tm-block:active { filter: brightness(0.9); }
+.herdr-tm-label {
+  font-family: var(--ds-font-family-code);
+  font-size: 10px; line-height: 14px;
+  color: var(--dsw-alias-bg-base);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: calc(100% - 4px);
+  pointer-events: none;
+}
+.herdr-tm-block[data-kind='codex'] { background: var(--dsw-alias-state-business-primary); }
+.herdr-tm-block[data-kind='pi'] { background: var(--dsw-alias-state-warn-primary); }
+.herdr-tm-block[data-kind='opencode'] { background: var(--dsw-alias-state-success-primary); }
+.herdr-tm-block[data-kind='unknown'] { background: var(--dsw-alias-label-tertiary); }
+.herdr-tm-empty {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%;
+  font-size: 11px; line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+/* ── Agents 全名称列表（v4 需求 4；长列表滚动 + 显示全部） ── */
+.herdr-dash-agent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 176px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dsw-alias-scrollbar-bg-l2) transparent;
+}
+.herdr-dash-agent-list[data-collapsed] { max-height: 176px; }
+.herdr-dash-agent-list::-webkit-scrollbar { width: 6px; }
+.herdr-dash-agent-list::-webkit-scrollbar-thumb { background: var(--dsw-alias-scrollbar-bg-l2); border-radius: 3px; }
+.herdr-dash-agent-row {
+  display: flex; align-items: center; gap: 6px;
+  min-width: 0;
+  font-size: 11px; line-height: 18px;
+}
+.herdr-dash-agent-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  background: var(--dsw-alias-label-tertiary);
+}
+.herdr-dash-agent-dot[data-kind='codex'] { background: var(--dsw-alias-state-business-primary); }
+.herdr-dash-agent-dot[data-kind='pi'] { background: var(--dsw-alias-state-warn-primary); }
+.herdr-dash-agent-dot[data-kind='opencode'] { background: var(--dsw-alias-state-success-primary); }
+.herdr-dash-agent-name {
+  color: var(--dsw-alias-label-secondary); font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.herdr-dash-agent-kind {
+  flex: none; font-family: var(--ds-font-family-code); font-size: 10px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.herdr-dash-agent-status {
+  margin-left: auto; flex: none; color: var(--dsw-alias-label-tertiary);
+}
+.herdr-dash-agent-status[data-state='working'] { color: var(--dsw-alias-state-business-primary); }
+.herdr-dash-agent-status[data-state='blocked'] { color: var(--dsw-alias-state-error-primary); }
+.herdr-dash-agent-status[data-state='done'],
+.herdr-dash-agent-status[data-state='idle'] { color: var(--dsw-alias-state-success-primary); }
+.herdr-dash-link-btn {
+  align-self: flex-start;
+  border: none; background: none; padding: 2px 0;
+  font-size: 11px; font-weight: 500; cursor: pointer;
+  color: var(--dsw-alias-state-business-primary);
+}
+.herdr-dash-link-btn:hover { text-decoration: underline; text-underline-offset: 2px; }
+/* 进程 unavailable / best-effort 注记（并入 Herdr 服务卡片，v4 需求 5） */
+.herdr-dash-process-unavail {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; line-height: 18px; color: var(--dsw-alias-state-warn-label);
+}
+.herdr-dash-process-note {
+  font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary);
+}
+/* 窄屏：workspace 卡片 meta 隐藏（避免横向溢出） */
+@media (max-width: 640px) {
+  .herdr-dash-ws-meta { display: none; }
+}
+
+/* ── 全局 Dashboard 入口与右侧工作区 surface（design: dashboard-global v3） ──
+   按钮为 sidebar 文档流内的 marker（v3 不再有 fixed 悬浮按钮）；rail/wide 由
+   data-rail 切换；surface 从 sidebar 右边界覆盖右侧工作区（left/top/宽高内联）。 */
+.herdr-sb-marker {
+  flex: none;
+  min-width: 0;
+  width: auto;
+  margin: 0 2px 8px;
+  box-sizing: border-box;
+}
+.herdr-sb-marker[data-rail] {
+  align-self: flex-start;
+  width: 36px;
+  margin: 0 0 12px;
+}
+.herdr-sb-marker-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 38px;
+  padding: 8px 16px;
+  box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: background .12s var(--ds-ease-in-out), border-color .12s var(--ds-ease-in-out);
+}
+.herdr-sb-marker-button:hover {
+  background: var(--dsw-alias-button-floating-hover);
+}
+.herdr-sb-marker-button[aria-pressed='true'] {
+  border-color: var(--dsw-alias-state-business-secondary);
+  background: var(--dsw-alias-state-business-tertiary);
+  color: var(--dsw-alias-state-business-primary);
+}
+.herdr-sb-marker[data-rail] .herdr-sb-marker-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  gap: 0;
+  border-color: transparent;
+  background: transparent;
+}
+.herdr-sb-marker[data-rail] .herdr-sb-marker-button:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.herdr-sb-marker-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+  flex: none;
+  color: currentColor;
+  background: currentColor;
+  -webkit-mask: var(--herdr-logo-mask) center / contain no-repeat;
+  mask: var(--herdr-logo-mask) center / contain no-repeat;
+}
+/* v4 需求 2：marker 三态状态点（颜色 + 文本 title，颜色不是唯一信息） */
+.herdr-sb-marker-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--dsw-alias-label-tertiary);
+}
+.herdr-sb-marker-dot[data-state='running'] { background: var(--dsw-alias-state-success-primary); }
+.herdr-sb-marker-dot[data-state='stopped'] { background: var(--dsw-alias-label-tertiary); }
+.herdr-sb-marker-dot[data-state='not-installed'] { background: var(--dsw-alias-state-warn-primary); }
+.herdr-sb-marker-dot[data-state='checking'] {
+  background: var(--dsw-alias-label-tertiary);
+  animation: herdr-state-pulse 1.4s var(--ds-ease-in-out) infinite;
+}
+@keyframes herdr-state-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .herdr-sb-marker-dot[data-state='checking'] { animation: none; }
+}
+.herdr-sb-marker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+.herdr-sb-marker[data-rail] .herdr-sb-marker-label { display: none; }
+/* 右侧工作区 surface：opaque、全高、独立滚动；不覆盖 sidebar（left 由测量内联） */
+.herdr-gds {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--dsw-alias-bg-base);
+  outline: none;
+  border-left: 1px solid var(--dsw-alias-border-l1);
+  box-shadow: var(--dsw-shadow-lv2);
+}
+.herdr-gds-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 8px 16px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-base);
+}
+.herdr-gds-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+  min-width: 0;
+}
+/* v4 需求 3：header 状态行（状态点 + 文本 + 版本 + 启动按钮） */
+.herdr-gds-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+  min-width: 0;
+}
+.herdr-state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--dsw-alias-label-tertiary);
+}
+.herdr-state-dot[data-state='running'] { background: var(--dsw-alias-state-success-primary); }
+.herdr-state-dot[data-state='stopped'] { background: var(--dsw-alias-label-tertiary); }
+.herdr-state-dot[data-state='not-installed'] { background: var(--dsw-alias-state-warn-primary); }
+.herdr-state-dot[data-state='checking'] {
+  background: var(--dsw-alias-label-tertiary);
+  animation: herdr-state-pulse 1.4s var(--ds-ease-in-out) infinite;
+}
+.herdr-gds-version {
+  font-family: var(--ds-font-family-code);
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.herdr-gds-start-error {
+  font-size: 11px;
+  color: var(--dsw-alias-state-error-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* pane 跳转/定位内联提示（header 下方，3s 自动消失） */
+.herdr-gds-notice {
+  flex: none;
+  margin: 0 16px;
+  padding: 6px 10px;
+  border: 1px solid var(--dsw-alias-state-warn-primary);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-state-warn-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+.herdr-gds-logo {
+  width: 18px;
+  height: 18px;
+  display: block;
+  flex: none;
+  color: var(--dsw-alias-state-business-primary);
+}
+.herdr-gds-close {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  flex: none;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 14px;
+  cursor: pointer;
+}
+.herdr-gds-close:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.herdr-gds-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dsw-alias-scrollbar-bg-l2) transparent;
+}
+.herdr-gds-body::-webkit-scrollbar { width: 6px; }
+.herdr-gds-body::-webkit-scrollbar-thumb { background: var(--dsw-alias-scrollbar-bg-l2); border-radius: 3px; }
+
 `
   document.head.appendChild(style)
 }

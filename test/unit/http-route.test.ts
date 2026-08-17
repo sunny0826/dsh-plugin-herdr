@@ -136,6 +136,53 @@ test('CA-007: /herdr-session-pane is GET-only and guarded', async () => {
   }
 })
 
+test('CA-007: /herdr-pane-session resolves pane → session (registry + tokens fallback)', async () => {
+  const reg = getBindingRegistry()
+  reg.set('session-a', { pane_id: 'w1:p1', created: false })
+  const fake = makeFakeHerdr()
+  fake.snapshot = async () => ({
+    version: '0.8.0',
+    protocol: 19,
+    workspaces: [],
+    agents: [],
+    panes: [
+      { pane_id: 'w1:p1', workspace_id: 'w1' },
+      { pane_id: 'w1:p2', workspace_id: 'w1', tokens: { dsh_session: 'session-b' } },
+    ],
+    tabs: [],
+    layouts: [],
+    focused_pane_id: null,
+    focused_tab_id: null,
+    focused_workspace_id: null,
+  })
+  const { routes, dispose } = await loadPlugin({ fakeHerdr: fake })
+  try {
+    const route = routes.find(r => r.path === '/herdr-pane-session')
+    assert.ok(route, '/herdr-pane-session registered')
+    // GET-only + local guard
+    const m = await invoke(route!.handler, { method: 'DELETE', headers: LOCAL })
+    assert.equal(m.status, 405)
+    assert.equal(m.headers.allow, 'GET')
+    const o = await invoke(route!.handler, { method: 'GET', headers: { host: 'localhost:1234', 'sec-fetch-site': 'cross-site' } })
+    assert.equal(o.status, 403)
+    // 无 pane 参数 → null
+    const none = await invoke(route!.handler, { method: 'GET', url: '/herdr-pane-session', headers: LOCAL })
+    assert.deepEqual(none.body, { session_id: null })
+    // 绑定 registry 反查命中
+    const self = await invoke(route!.handler, { method: 'GET', url: '/herdr-pane-session?pane=w1:p1', headers: LOCAL })
+    assert.deepEqual(self.body, { session_id: 'session-a' })
+    // registry 未命中 → herdr pane tokens 兜底
+    const fallback = await invoke(route!.handler, { method: 'GET', url: '/herdr-pane-session?pane=w1:p2', headers: LOCAL })
+    assert.deepEqual(fallback.body, { session_id: 'session-b' })
+    // 完全无归属 → null
+    const unbound = await invoke(route!.handler, { method: 'GET', url: '/herdr-pane-session?pane=w1:p9', headers: LOCAL })
+    assert.deepEqual(unbound.body, { session_id: null })
+  } finally {
+    await dispose()
+    reg.delete('session-a')
+  }
+})
+
 test('CA-007: /herdr-start is POST-only; GET/cross-origin never reach the process spawn', async () => {
   const { routes, dispose } = await loadPlugin()
   try {
@@ -252,6 +299,41 @@ test('CA-007: /herdr-rename validates label and renames via fake herdr', async (
     const w = await invoke(route!.handler, { method: 'POST', headers: LOCAL, body: { kind: 'workspace', id: 'w1', label: 'renamed' } })
     assert.equal(w.status, 200)
     assert.deepEqual(ops, [['pane', 'demo pane'], ['ws', 'renamed']])
+  } finally {
+    await dispose()
+  }
+})
+
+test('CA-007: /herdr-dashboard is GET-only, guarded, and returns the read-only DTO', async () => {
+  const { routes, dispose } = await loadPlugin({ fakeHerdr: makeFakeHerdr() })
+  try {
+    const route = routes.find(r => r.path === '/herdr-dashboard')
+    assert.ok(route, '/herdr-dashboard registered')
+    // 错误方法 → 405 + Allow
+    const m = await invoke(route!.handler, { method: 'POST', headers: LOCAL })
+    assert.equal(m.status, 405)
+    assert.equal(m.headers.allow, 'GET')
+    // 非本地 Host → 403
+    const h = await invoke(route!.handler, { method: 'GET', headers: { host: 'evil.example' } })
+    assert.equal(h.status, 403)
+    // 跨站 Origin → 403
+    const o = await invoke(route!.handler, { method: 'GET', headers: { host: 'localhost:1234', origin: 'http://evil.example' } })
+    assert.equal(o.status, 403)
+    // 可信本地 GET → 200 + 完整 DTO 结构（host 恒可用；process 为 best-effort）
+    const ok = await invoke(route!.handler, { method: 'GET', headers: LOCAL })
+    assert.equal(ok.status, 200)
+    const snap = ok.body as Record<string, unknown>
+    for (const key of ['updated_at', 'stale', 'last_error', 'server', 'connection', 'host', 'process', 'summary', 'workspaces']) {
+      assert.ok(key in snap, `dashboard DTO missing key ${key}`)
+    }
+    const host = snap.host as Record<string, unknown>
+    assert.equal(typeof host.hostname, 'string')
+    assert.equal(typeof host.arch, 'string')
+    const proc = snap.process as Record<string, unknown>
+    assert.equal(typeof proc.available, 'boolean')
+    assert.equal(typeof proc.sampled_at, 'number')
+    const server = snap.server as Record<string, unknown>
+    assert.equal(typeof server.status, 'string')
   } finally {
     await dispose()
   }

@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process'
+import { access, constants } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { HerdrClient } from './client/index.ts'
 import { HerdrError } from './client/error.ts'
@@ -11,7 +13,12 @@ import { getBoundPaneIds } from './binding-registry.ts'
 export interface HerdrAgentStatus {
   pane_id: string
   workspace_id?: string
+  /** kind 派生的 agent 标识（如 codex/pi；协议兼容推断，非严格契约）。 */
   agent: string
+  /** 自定义名称（agent target；v4 起保留供名称列表展示）。 */
+  name?: string
+  /** best-effort kind（回退链 kind → agent → unknown；协议兼容推断）。 */
+  kind?: string
   status: string
   message?: string
   /** 最近输出（只读；服务端轮询 pane.read 的全量快照，上限截断）。 */
@@ -102,7 +109,12 @@ export interface HerdrServerInfo {
   socket: string | null
   session: string | null
   checked_at: number
+  /** Herdr CLI/server binary 可用性（PATH fs.access 探测，不 spawn）。 */
+  installation: HerdrInstallation
 }
+
+/** Herdr CLI/server binary 可用性。 */
+export type HerdrInstallation = 'installed' | 'missing' | 'unknown'
 
 /** ping 探测函数形状（测试注入用）；null = 服务器不可达。 */
 export type PingProbeFn = () => Promise<{ version: string; protocol: number } | null>
@@ -125,6 +137,7 @@ export function serverInfoFromPing(
   socketPath: string | null,
   session: string | null,
   status: 'running' | 'not_running',
+  installation: HerdrInstallation = 'unknown',
 ): HerdrServerInfo {
   return {
     status,
@@ -134,7 +147,27 @@ export function serverInfoFromPing(
     socket: socketPath,
     session,
     checked_at: Date.now(),
+    installation,
   }
+}
+
+/**
+ * PATH 中 herdr 二进制可用性探测（v4 需求 2：未安装三态；fs.access 不 spawn
+ * 子进程）。路径为空/无法判定 → unknown；任一 PATH 目录下可执行 → installed。
+ */
+export async function probeHerdrInstallation(binPath = 'herdr', envPath = process.env.PATH): Promise<HerdrInstallation> {
+  if (!envPath) return 'unknown'
+  const dirs = envPath.split(':').filter(Boolean)
+  if (dirs.length === 0) return 'unknown'
+  for (const dir of dirs) {
+    try {
+      await access(join(dir, binPath), constants.X_OK)
+      return 'installed'
+    } catch {
+      // 继续下一个 PATH 目录
+    }
+  }
+  return 'missing'
 }
 
 /**
@@ -262,7 +295,7 @@ export class HerdrStatusTracker {
   private readonly agents = new Map<string, HerdrAgentStatus>()
   private timer: NodeJS.Timeout | null = null
   private readonly pollIntervalMs: number
-  private serverInfo: HerdrServerInfo = { status: 'unknown', running: false, version: null, protocol: null, socket: null, session: null, checked_at: 0 }
+  private serverInfo: HerdrServerInfo = { status: 'unknown', running: false, version: null, protocol: null, socket: null, session: null, checked_at: 0, installation: 'unknown' }
   // 双拓扑（design-v2 §7.3）：full 全量 + filtered 按项目目录过滤
   private fullTopology: HerdrTopology = { workspaces: [], tabs: [], panes: [] }
   private filteredTopology: HerdrTopology = { workspaces: [], tabs: [], panes: [] }
@@ -435,11 +468,14 @@ export class HerdrStatusTracker {
     try {
       const ping = await this.pingFn()
       if (signal.aborted) return
-      this.serverInfo = serverInfoFromPing(ping, this.socketPath, this.session, ping ? 'running' : 'not_running')
+      // ping 成功 → binary 必然存在（installed）；失败时做 PATH fs.access 探测
+      // （区分 stopped 与 not-installed，不 spawn 子进程）。
+      const installation = ping ? 'installed' as const : await probeHerdrInstallation()
+      this.serverInfo = serverInfoFromPing(ping, this.socketPath, this.session, ping ? 'running' : 'not_running', installation)
     } catch (err) {
       // 探测失败（协议类）→ 降级 unknown 并记录诊断，便于 stale 排查
       if (!signal.aborted) {
-        this.serverInfo = { status: 'unknown', running: false, version: null, protocol: null, socket: this.socketPath, session: this.session, checked_at: Date.now() }
+        this.serverInfo = { status: 'unknown', running: false, version: null, protocol: null, socket: this.socketPath, session: this.session, checked_at: Date.now(), installation: 'unknown' }
         this.lastError = `server probe failed: ${errMsg(err)}`
         this.rateLimited('poll-server', () => this.logger.warn('server probe failed: %s', errMsg(err)))
       }
@@ -509,10 +545,15 @@ export class HerdrStatusTracker {
         seen.add(a.pane_id)
         const prev = this.agents.get(a.pane_id)
         const status = a.status ?? 'unknown'
+        // v4：保留 name 与 best-effort kind（回退链 kind → agent → unknown；
+        // name 是自定义 target，不得当 kind 用）。
+        const raw = a as { name?: string | null; kind?: string | null; agent?: string | null }
         this.agents.set(a.pane_id, {
           pane_id: a.pane_id,
           workspace_id: a.workspace_id,
           agent: a.agent ?? 'unknown',
+          name: raw.name ?? undefined,
+          kind: raw.kind ?? raw.agent ?? undefined,
           status,
           message: a.message ?? undefined,
           output: prev?.output ?? '',

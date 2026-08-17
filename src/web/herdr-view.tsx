@@ -48,7 +48,15 @@ export function HerdrHeaderPill() {
 // ── 操作错误采集（关闭失败等，显示在工具栏下方一条横幅） ─────────────
 type ActionError = { message: string; key: number }
 
+// ── Herdr tab 内容（design: dashboard-global §4.2/§5 落地调整） ──
+// 全局 Dashboard 入口在左侧边栏「新会话」下方（全局面板）；Herdr tab 内曾有的
+// 「打开全局仪表盘」降级按钮已移除（用户定案），tab 只保留会话级 Panes 视图。
+// 门控在 HerdrPanesView 内：非 herdr 模式整页不渲染。
 export function HerdrView() {
+  return <HerdrPanesView />
+}
+
+export function HerdrPanesView() {
   // 语言订阅：切语言时工具栏/空态/确认文案跟随
   void useHerdrLang()
   const herdrMode = useHerdrMode()

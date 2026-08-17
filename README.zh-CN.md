@@ -206,10 +206,12 @@ herdr_pane_read    {pane_id: '<pane_id>'}              # 读取结果
 
 - 所有操作仅限本机：插件只与本机 herdr socket 通信（唯一的子进程是可选
   的 server 启动引导）。
-- 面板端点（`/herdr-status`、`/herdr-start`、`/herdr-session-pane`、
-  `/herdr-close`、`/herdr-rename`）是本机 web server 上的普通 HTTP——
+- 面板端点（`/herdr-status`、`/herdr-dashboard`、`/herdr-start`、
+  `/herdr-session-pane`、`/herdr-pane-session`、`/herdr-close`、
+  `/herdr-rename`）是本机 web server 上的普通 HTTP——
   **不要公开暴露 DSH web 端口**。端点另有守卫（CA-007）：
-  - 严格方法：`/herdr-status` 与 `/herdr-session-pane` 仅 GET，
+  - 严格方法：`/herdr-status`、`/herdr-dashboard`、`/herdr-session-pane`
+    与 `/herdr-pane-session` 仅 GET，
     `/herdr-start`、`/herdr-close` 与 `/herdr-rename` 仅 POST
     （否则 `405 + Allow`）；
   - 仅限本机上下文：`Host` 必须是 `localhost`/`127.0.0.1`/`::1`

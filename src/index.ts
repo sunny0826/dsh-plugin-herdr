@@ -5,6 +5,7 @@ import { createLogger } from './log.ts'
 import { setupEventForwarding } from './events/forward.ts'
 import { setupStateReporting } from './events/state-report.ts'
 import { HerdrStatusTracker, startHerdrServer } from './status.ts'
+import { HerdrDashboardTracker } from './dashboard.ts'
 import { getBindingRegistry, getBoundPaneIds, sessionIdFromTokens } from './binding-registry.ts'
 import { registerHerdrSkill } from './skill.ts'
 import { registerSnapshot } from './tools/snapshot.ts'
@@ -93,6 +94,11 @@ export function apply(ctx: Context, config: ConfigType) {
     socketPath: resolveSocketPath(config) ?? null,
     session: resolveSession(config) ?? null,
   })
+  // Dashboard（design: dashboard §4）：本机只读总览——复用 status tracker 的单飞轮询
+  // 快照（全量，不按项目过滤），自身只做 host 采集 / POSIX 进程探测 / DTO 装配。
+  const dashboardTracker = new HerdrDashboardTracker(ctx, {
+    readStatus: () => tracker.snapshot('all'),
+  })
   const offAgentState = ctx.on('herdr/agent-state', (info: { pane_id: string; agent: string; status: string; message?: string }) =>
     tracker.onAgentState(info))
   const offResourceChanged = ctx.on('herdr/resource-changed', (change: { type: string; action: string; id: string }) =>
@@ -102,9 +108,11 @@ export function apply(ctx: Context, config: ConfigType) {
   // （headless 环境无 webServer 时回调不执行，功能自动降级）
   let offRoute: (() => void) | null = null
   let offBindingRoute: (() => void) | null = null
+  let offPaneSessionRoute: (() => void) | null = null
   let offStartRoute: (() => void) | null = null
   let offCloseRoute: (() => void) | null = null
   let offRenameRoute: (() => void) | null = null
+  let offDashboardRoute: (() => void) | null = null
   ctx.inject(['webServer'], injected => {
     const webServer = (injected as unknown as { webServer: { register(r: unknown): () => void } }).webServer
     type Res = { writeHead(code: number, headers: Record<string, string>): void; end(body?: string): void }
@@ -140,6 +148,17 @@ export function apply(ctx: Context, config: ConfigType) {
         res.end(JSON.stringify(tracker.snapshot(scope)))
       },
     })
+    // Dashboard（design: dashboard §4.1）：本机只读总览，GET-only + 现有 local/GET guard。
+    // 独立 DTO（决策 11），不改变 /herdr-status 的 session/project 过滤语义。
+    offDashboardRoute = webServer.register({
+      kind: 'exact',
+      path: '/herdr-dashboard',
+      handler: (req: unknown, res: Res) => {
+        if (!guard(res, req, 'GET')) return
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify(dashboardTracker.snapshot()))
+      },
+    })
     // M11 本对话 pane 查询：GET /herdr-session-pane?agent=<sessionId>
     offBindingRoute = webServer.register({
       kind: 'exact',
@@ -164,6 +183,40 @@ export function apply(ctx: Context, config: ConfigType) {
           // 忽略解析/快照错误（返回 null）
         }
         res.end(JSON.stringify({ pane_id: paneId }))
+      },
+    })
+    // M12 pane → session 归属反查：GET /herdr-pane-session?pane=<paneId>
+    // Dashboard pane 跳转用：判断目标 pane 是否属于当前 DSH 会话（registry 反查，
+    // 兜底读 herdr pane 的 tokens.dsh_session 标记）；无归属返回 { session_id: null }。
+    offPaneSessionRoute = webServer.register({
+      kind: 'exact',
+      path: '/herdr-pane-session',
+      handler: async (req: unknown, res: Res) => {
+        if (!guard(res, req, 'GET')) return
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        let sessionId: string | null = null
+        try {
+          const r = req as Req
+          const paneId = new URL(r.url ?? '/', 'http://x').searchParams.get('pane')
+          if (paneId) {
+            // 1) 绑定 registry 反查（pane_id → session_id；O(n)，绑定数很小）
+            for (const [sid, b] of getBindingRegistry()) {
+              if (b.pane_id === paneId) {
+                sessionId = sid
+                break
+              }
+            }
+            // 2) 兜底：herdr snapshot 中该 pane 的 tokens.dsh_session（registry 重启清空）
+            if (!sessionId) {
+              const snap = await ctx.herdr.snapshot()
+              const pane = (snap.panes ?? []).find((p: { pane_id?: string }) => p.pane_id === paneId)
+              sessionId = pane ? (sessionIdFromTokens((pane as { tokens?: Record<string, string | null> }).tokens) ?? null) : null
+            }
+          }
+        } catch {
+          // 忽略解析/快照错误（返回 null）
+        }
+        res.end(JSON.stringify({ session_id: sessionId }))
       },
     })
     // M7 启动看板：POST /herdr-start（headless server 未运行时由看板按钮调用；
@@ -291,6 +344,7 @@ export function apply(ctx: Context, config: ConfigType) {
     })
   })
   tracker.start()
+  dashboardTracker.start()
 
   // 会话 skill：启用插件即加载 Herdr 官方 SKILL.md
   const stopSkill = registerHerdrSkill(ctx)
@@ -307,13 +361,16 @@ export function apply(ctx: Context, config: ConfigType) {
   ctx.effect(() => {
     return () => {
       tracker.stop()
+      dashboardTracker.stop()
       offAgentState()
       offResourceChanged()
       offRoute?.()
       offBindingRoute?.()
+      offPaneSessionRoute?.()
       offStartRoute?.()
       offCloseRoute?.()
       offRenameRoute?.()
+      offDashboardRoute?.()
       stopSkill()
       stopForwarding()
       stopReporting()
