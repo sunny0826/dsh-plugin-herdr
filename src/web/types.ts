@@ -43,6 +43,8 @@ export interface HerdrPaneView {
   tab_id?: string
   label?: string
   title?: string
+  terminal_title_stripped?: string
+  display_agent?: string
   cwd?: string
   foreground_cwd?: string
   focused: boolean

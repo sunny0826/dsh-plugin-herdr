@@ -252,3 +252,49 @@ test('store: stale old-stream closed must not close the new controller (#2)', as
   assert.equal(closedNow, false, 'old stream closed must not close the new controller')
   assert.equal(store.getPane('w1:p1')?.status, 'controlling')
 })
+
+test('store: not_found error event -> status closed (fall back to snapshot, not stale error)', async () => {
+  const t = new FakeTransport()
+  const store = new BrowserTerminalSessionStore(t)
+  const sig: TerminalStoreSignal[] = []
+  store.subscribe('w1:p1', s => sig.push(s))
+  await store.acquireObserver('w1:p1', { cols: 80, rows: 24 })
+  t.slots[0]!.cb({ type: 'error', sessionId: t.slots[0]!.sessionId, code: 'terminal_session_not_found', message: 'session 不存在', retryable: false })
+  assert.ok(sig.some(s => s.type === 'status' && s.status === 'closed'), 'not_found must surface as closed')
+  assert.ok(!sig.some(s => s.type === 'status' && s.status === 'error'), 'not_found must not surface as error')
+})
+
+test('store: process_exited error event -> status closed (agent 任务结束子进程退出)', async () => {
+  const t = new FakeTransport()
+  const store = new BrowserTerminalSessionStore(t)
+  const sig: TerminalStoreSignal[] = []
+  store.subscribe('w1:p1', s => sig.push(s))
+  await store.acquireObserver('w1:p1', { cols: 80, rows: 24 })
+  t.slots[0]!.cb({ type: 'error', sessionId: t.slots[0]!.sessionId, code: 'terminal_session_process_exited', message: '子进程退出', retryable: true })
+  assert.ok(sig.some(s => s.type === 'status' && s.status === 'closed'))
+})
+
+test('store: acquireObserver after error restarts a fresh session (不复用 stale error)', async () => {
+  const t = new FakeTransport()
+  const store = new BrowserTerminalSessionStore(t)
+  await store.acquireObserver('w1:p1', { cols: 80, rows: 24 })
+  t.slots[0]!.cb({ type: 'error', sessionId: t.slots[0]!.sessionId, code: 'terminal_session_protocol_error', message: 'bad', retryable: false })
+  assert.equal(store.getPane('w1:p1')?.status, 'error')
+  // 再次 acquire → 全新 start（starts 递增），状态回 starting
+  const sig: TerminalStoreSignal[] = []
+  store.subscribe('w1:p1', s => sig.push(s))
+  await store.acquireObserver('w1:p1', { cols: 80, rows: 24 })
+  assert.equal(t.starts.length, 2, 'must start a fresh session after error')
+  assert.equal(store.getPane('w1:p1')?.status, 'starting')
+  assert.ok(sig.some(s => s.type === 'status' && s.status === 'starting'))
+})
+
+test('store: requestControl after error restarts a fresh control session', async () => {
+  const t = new FakeTransport()
+  const store = new BrowserTerminalSessionStore(t)
+  await store.acquireObserver('w1:p1', { cols: 80, rows: 24 })
+  t.slots[0]!.cb({ type: 'error', sessionId: t.slots[0]!.sessionId, code: 'terminal_session_protocol_error', message: 'bad', retryable: false })
+  await store.requestControl('w1:p1', { cols: 80, rows: 24 })
+  assert.equal(t.starts.length, 2, 'must start a fresh control session after error')
+  assert.equal(t.starts[1]?.mode, 'control')
+})

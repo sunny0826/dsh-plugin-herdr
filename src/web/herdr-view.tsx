@@ -5,7 +5,9 @@ import {
   applyPaneOrder,
   ariaStateLabel,
   filterGroupsToSession,
+  isDshPane,
   loadPaneOrder,
+  paneDisplayName,
   paneDisplayState,
   reorderPanes,
   savePaneOrder,
@@ -162,9 +164,10 @@ export function HerdrPanesView() {
   const orderedByWs = useMemo(() => {
     const m = new Map<string, HerdrPaneView[]>()
     for (const g of groups) {
-      // 过滤隐藏 + 应用 label override（null=清除→回退 displayName）
+      // 过滤隐藏 + dsh 基础设施 pane（插件自身 pane，如绑定根 pane）+ 应用 label override
       let panes = g.panes
       if (hiddenPaneIds.size > 0) panes = panes.filter(p => !hiddenPaneIds.has(p.pane_id))
+      panes = panes.filter(p => !isDshPane(p, agentByPane.get(p.pane_id)))
       if (labelOverrides.size > 0) {
         panes = panes.map(p => {
           const ov = labelOverrides.get(p.pane_id)
@@ -175,7 +178,7 @@ export function HerdrPanesView() {
       m.set(g.workspace.workspace_id, applyPaneOrder(panes, loadPaneOrder(g.workspace.workspace_id)))
     }
     return m
-  }, [groups, hiddenPaneIds, labelOverrides])
+  }, [groups, hiddenPaneIds, labelOverrides, agentByPane])
   // workspace 组 label override（v3：单一会话 workspace，无组头/折叠）
   const visibleGroups = useMemo(() => {
     return groups.map(g => {
@@ -418,7 +421,9 @@ export function HerdrPanesView() {
             <span className="herdr-term-max-title">
               {(() => {
                 const ma = agentByPane.get(maximizedPaneId)
-                return ma ? `${ma.pane_id} — ${ma.agent}` : maximizedPaneId
+                const pane = allPanes.find(p => p.pane_id === maximizedPaneId)
+                const name = pane ? paneDisplayName(pane, ma) : (ma?.pane_id ?? maximizedPaneId)
+                return ma && ma.agent !== 'dsh' ? `${name} — ${ma.agent}` : name
               })()}
             </span>
             <button

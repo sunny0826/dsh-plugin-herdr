@@ -889,7 +889,7 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
 }
 .pl-row[data-self] { background: var(--dsw-alias-state-business-tertiary); }
 .pl-row[data-self]:hover { background: var(--dsw-alias-interactive-bg-hover-accent); }
-.pl-paneid { font-family: var(--ds-font-family-code); font-size: 11.5px; line-height: 16px; font-weight: 500; }
+.pl-paneid { font-size: 12px; line-height: 16px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pl-agent { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pl-state { margin-left: auto; font-size: 11px; line-height: 16px; flex: none; }
 /* done 与 idle 区分（done=中性灰；与 dashboard/herdr-tab 一致） */
@@ -955,14 +955,6 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
 .herdr-server-note { font-size: 11px; color: var(--dsw-alias-label-tertiary); }
 .herdr-banner-stopped { border-color: var(--dsw-alias-state-warn-secondary); background: var(--dsw-alias-state-warn-tertiary); }
 .herdr-banner-running { border-color: var(--dsw-alias-state-success-secondary); background: var(--dsw-alias-state-success-tertiary); }
-.herdr-hero-card {
-  position: fixed; top: 56px; right: 16px; width: 320px; z-index: 30;
-  border-radius: 12px;
-  box-shadow: var(--dsw-shadow-lv3);
-}
-.herdr-hero-card .herdr-server-banner { border-radius: 12px; }
-.herdr-hero-card .herdr-server-error { padding: 0 12px 8px; }
-.herdr-hero-card .herdr-server-note { padding: 0 12px 8px; }
 .herdr-pill {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; color: var(--dsw-alias-label-secondary);

@@ -287,6 +287,17 @@ export function stripAnsi(text: string): string {
   return ansiPlainText(text)
 }
 
+/** ANSI 安全清理 viewport 快照填充：去首部纯空白行 + 每行行尾空白（pane.read visible 每行按终端宽度右补空格）。 */
+export function trimAnsiSnapshotPadding(text: string): string {
+  const lines = text.split(/\r?\n/)
+  let first = 0
+  while (first < lines.length && /^[ \t]*$/.test(lines[first])) first++
+  return lines
+    .slice(first)
+    .map(line => line.replace(/[ \t]+$/, ''))
+    .join('\n')
+}
+
 /** 压缩连续空行（保留至多 1 个空行分隔）；基于 AnsiLine.plainText 判断。 */
 export function compactAnsiLines(lines: AnsiLine[]): AnsiLine[] {
   const out: AnsiLine[] = []

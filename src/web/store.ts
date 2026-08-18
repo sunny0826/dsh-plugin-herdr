@@ -1,6 +1,6 @@
 // 数据获取：模块级共享轮询（多组件订阅同一数据源；逻辑见 client-logic.ts）。
 // 与拆分前的 client.tsx 完全一致：statusStore 是本模块的模块级单例，
-// 所有订阅方（HerdrView / HerdrHeaderPill / HerdrPaneList / HerdrHeroStatus）
+// 所有订阅方（HerdrView / HerdrHeaderPill / HerdrPaneList）
 // 共享同一数据源——移入独立模块后单例仍位于本文件，行为不变。
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
@@ -157,15 +157,17 @@ export interface TerminalBootstrapResult {
   truncated: boolean
 }
 
-/** 获取 pane 的终端快照（B 模式：revision 变化时重新读取全量 snapshot）。 */
+/** 获取 pane 的终端快照（B 模式：revision 变化时重新读取全量 snapshot；source 可选 visible/recent_unwrapped）。 */
 export async function fetchTerminalBootstrap(
   paneId: string,
   maxLines?: number,
   signal?: AbortSignal,
+  source: 'visible' | 'recent_unwrapped' = 'visible',
 ): Promise<TerminalBootstrapResult> {
   const url = new URL('/herdr-pane-terminal-bootstrap', window.location.origin)
   url.searchParams.set('pane_id', paneId)
   if (maxLines !== undefined) url.searchParams.set('lines', String(maxLines))
+  if (source !== 'visible') url.searchParams.set('source', source)
   const resp = await fetch(url.toString(), { signal })
   const body = await resp.json() as { ok?: boolean; text?: string; revision?: number; truncated?: boolean; error?: string }
   if (!body.ok) throw new Error(body.error ?? `terminal-bootstrap HTTP ${resp.status}`)

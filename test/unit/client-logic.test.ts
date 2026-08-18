@@ -19,10 +19,12 @@ import {
   filterGroupsToSession,
   focusBeforeRemoval,
   formatTime,
+  isDshPane,
   isDragMovement,
   loadPaneOrder,
   normalizeDashboardKind,
   normalizeDashboardKindCounts,
+  paneDisplayName,
   paneDisplayState,
   paneKeyboardHandlers,
   parseAnsiOutput,
@@ -40,11 +42,12 @@ import {
   terminalFocusTransition,
   terminalScrollTransition,
   toggleCollapse,
+  trimAnsiSnapshotPadding,
   truncateAnsiTail,
   validateLabel,
 } from '../../src/client-logic.ts'
 import type { PaneOrderStorageLike } from '../../src/client-logic.ts'
-import type { HerdrTopology } from '../../src/status.ts'
+import type { HerdrPaneView, HerdrTopology } from '../../src/status.ts'
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
@@ -1102,4 +1105,45 @@ test('replayTerminalSnapshot: backspace moves cursor back and overwrites', () =>
   assert.equal(s.rows[0][1].text, 'b') // 'b' unchanged
   assert.equal(s.rows[0][2].text, 'x') // 'x' overwrote 'c' at col 2
   assert.equal(s.cursor.column, 3) // cursor at col 3
+})
+
+test('paneDisplayName: fallback chain label > title > terminal_title_stripped > display_agent > agent 名 > pane_id', () => {
+  const pane = (label?: string, title?: string, tts?: string, da?: string): HerdrPaneView => ({
+    pane_id: 'w1:p1',
+    workspace_id: 'w1',
+    focused: false,
+    label, title, terminal_title_stripped: tts, display_agent: da,
+  })
+  const agent = (name?: string, agentName?: string) => ({ name, agent: agentName }) as never
+  assert.equal(paneDisplayName(pane('我的 pane'), undefined), '我的 pane')
+  assert.equal(paneDisplayName(pane(undefined, 'title'), undefined), 'title')
+  assert.equal(paneDisplayName(pane(undefined, undefined, 'stripped'), undefined), 'stripped')
+  assert.equal(paneDisplayName(pane(undefined, undefined, undefined, 'pi-1'), undefined), 'pi-1')
+  assert.equal(paneDisplayName(pane(), agent(undefined, 'pi-1')), 'pi-1')
+  assert.equal(paneDisplayName(pane(), agent('pi-task', 'pi-1')), 'pi-task')
+  assert.equal(paneDisplayName(pane(), undefined), 'w1:p1')
+  // label 优先于 title（重命名后展示用户名字）
+  assert.equal(paneDisplayName(pane('用户改名', 'title'), undefined), '用户改名')
+})
+
+test('isDshPane: agent 为 dsh 或 label 以 dsh: 开头判为插件自身 pane', () => {
+  const pane = (label?: string): HerdrPaneView => ({ pane_id: 'w1:p1', workspace_id: 'w1', focused: false, label })
+  const agent = (agentName: string) => ({ agent: agentName }) as never
+  assert.equal(isDshPane(pane(), agent('dsh')), true)
+  assert.equal(isDshPane(pane(), agent('dsh:herdr-plugin')), true)
+  assert.equal(isDshPane(pane('dsh:my-project'), undefined), true)
+  assert.equal(isDshPane(pane(), agent('pi-1')), false)
+  assert.equal(isDshPane(pane('normal'), agent('codex-1')), false)
+  assert.equal(isDshPane(pane(), undefined), false)
+})
+
+test('trimAnsiSnapshotPadding: 去首部空行与行尾填充空白（保留 ANSI 序列）', () => {
+  assert.equal(trimAnsiSnapshotPadding(''), '')
+  assert.equal(trimAnsiSnapshotPadding('   \n  \ncontent'), 'content')
+  assert.equal(trimAnsiSnapshotPadding('content\n'), 'content\n')
+  assert.equal(trimAnsiSnapshotPadding('content   \nnext\t\n'), 'content\nnext\n')
+  // ANSI 序列保留，仅去掉纯空白
+  assert.equal(trimAnsiSnapshotPadding('\u001b[31mred\u001b[0m   \nplain'), '\u001b[31mred\u001b[0m\nplain')
+  // CRLF 归一为 \n
+  assert.equal(trimAnsiSnapshotPadding('\r\n\r\ncontent\r\n'), 'content\n')
 })

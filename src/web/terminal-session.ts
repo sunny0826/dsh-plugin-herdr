@@ -84,7 +84,9 @@ export class BrowserTerminalSessionStore {
   /** 引用计数 + 幂等：同一 pane 多组件不重复启动 observer；宽限期内复用已有 session。 */
   async acquireObserver(paneId: string, size: TerminalSize): Promise<void> {
     const existing = this.panes.get(paneId)
-    if (existing && existing.status !== 'closed') {
+    // 仅复用 live 会话；closed/error（stale，服务端 session 已回收或上次失败）一律全新 start，
+    // 避免 agent 任务结束后点击仍残留 "session 不存在" 等过期错误
+    if (existing && existing.status !== 'closed' && existing.status !== 'error') {
       existing.refcount++
       if (existing.graceTimer) {
         clearTimeout(existing.graceTimer)
@@ -93,9 +95,19 @@ export class BrowserTerminalSessionStore {
       this.emit(paneId, { type: 'status', status: existing.status, message: existing.message })
       return
     }
-    const ps: PaneSession = {
-      paneId, status: 'starting', controlMode: false, generation: 0, cursorSeq: -1, refcount: 1, reconnecting: false,
+    // stale：重置同一对象（不换引用，保持多组件 refcount 语义）再全新连接
+    const ps: PaneSession = existing ?? {
+      paneId, status: 'starting', controlMode: false, generation: 0, cursorSeq: -1, refcount: 0, reconnecting: false,
     }
+    ps.handle?.close()
+    if (ps.graceTimer) { clearTimeout(ps.graceTimer); ps.graceTimer = undefined }
+    ps.status = 'starting'
+    ps.controlMode = false
+    ps.generation = 0
+    ps.cursorSeq = -1
+    ps.sessionId = undefined
+    ps.reconnecting = false
+    ps.refcount = 1
     this.panes.set(paneId, ps)
     this.emit(paneId, { type: 'status', status: 'starting' })
     await this.connect(ps, size, 'observe')
@@ -104,7 +116,21 @@ export class BrowserTerminalSessionStore {
   /** controller 激活（Phase 2）。takeover=true 走 --takeover（需用户二次确认）。 */
   async requestControl(paneId: string, size: TerminalSize, takeover = false): Promise<void> {
     const ps = this.panes.get(paneId)
-    if (!ps || ps.status === 'closed') {
+    if (!ps || ps.status === 'closed' || ps.status === 'error') {
+      if (ps) {
+        ps.handle?.close()
+        if (ps.graceTimer) { clearTimeout(ps.graceTimer); ps.graceTimer = undefined }
+        ps.status = 'starting'
+        ps.controlMode = true
+        ps.generation = 0
+        ps.cursorSeq = -1
+        ps.sessionId = undefined
+        ps.reconnecting = false
+        ps.refcount = 1
+        this.emit(paneId, { type: 'status', status: 'starting' })
+        await this.connect(ps, size, 'control', takeover)
+        return
+      }
       const fresh: PaneSession = { paneId, status: 'starting', controlMode: true, generation: 0, cursorSeq: -1, refcount: 1, reconnecting: false }
       this.panes.set(paneId, fresh)
       this.emit(paneId, { type: 'status', status: 'starting' })
@@ -240,9 +266,17 @@ export class BrowserTerminalSessionStore {
         this.emit(ps.paneId, { type: 'status', status: 'conflict', message: ev.message })
         break
       case 'error':
-        ps.status = 'error'
-        ps.message = ev.message
-        this.emit(ps.paneId, { type: 'status', status: 'error', message: ev.message })
+        // 服务端 session 已回收（agent 任务结束、子进程退出等）：按 closed 处理，
+        // 组件回退快照而非显示 "session 不存在"；下次 acquireObserver 会全新 start
+        if (ev.code === 'terminal_session_not_found' || ev.code === 'terminal_session_process_exited') {
+          ps.status = 'closed'
+          ps.reconnecting = false
+          this.emit(ps.paneId, { type: 'status', status: 'closed' })
+        } else {
+          ps.status = 'error'
+          ps.message = ev.message
+          this.emit(ps.paneId, { type: 'status', status: 'error', message: ev.message })
+        }
         break
       case 'closed': {
         // 流结束：observer 断线可尝试重连；错误退出则标记 closed（组件回退快照）

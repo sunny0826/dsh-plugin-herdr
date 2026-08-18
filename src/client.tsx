@@ -9,7 +9,7 @@
 //   navigation.ts    pendingFocusPane / focusPaneInHerdrTab / getSessionId
 //   server-banner.tsx HerdrServerBanner
 //   herdr-view.tsx   HerdrView / PaneRow / HerdrHeaderPill
-//   pane-list.tsx    HerdrPaneList / HerdrLogo / HerdrHeroStatus
+//   pane-list.tsx    HerdrPaneList / HerdrLogo
 //   app.tsx          apply() + 槽位注册 + sessions 注入
 
 // 样式注入副作用：模块加载时执行一次（STYLE_ID 去重），与原 client.tsx 时序一致。

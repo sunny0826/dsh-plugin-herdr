@@ -14,6 +14,7 @@ import {
   type TerminalBootstrapResult,
 } from './store.ts'
 import { terminalSessionStore, type TerminalStoreSignal } from './terminal-session.ts'
+import { trimAnsiSnapshotPadding } from '../terminal-ansi.ts'
 import { t, useHerdrLang } from './i18n.ts'
 
 // —— 终端主题：随 DSH 界面亮暗切换（用户指定 Ghostty 主题）——
@@ -183,6 +184,16 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
     let mode: IoMode = 'observer'
     let observerSucceeded = false
     let snapshotStarted = false
+    let historyReady = false
+    let historySeeded = false
+    const pendingFrames: Array<{ bytesArr: Uint8Array; seq: number }> = []
+    const flushFrames = (): void => {
+      const t = terminalRef.current
+      if (!t) return
+      for (const f of pendingFrames.splice(0)) {
+        t.write(f.bytesArr, () => terminalSessionStore.confirmFrame(paneId, f.seq))
+      }
+    }
 
     const setMode = (m: IoMode): void => {
       mode = m
@@ -200,7 +211,7 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
       const atBottom = buffer.viewportY >= buffer.baseY
       const viewportY = buffer.viewportY
       terminal.reset()
-      terminal.write(result.text, () => {
+      terminal.write(trimAnsiSnapshotPadding(result.text), () => {
         if (atBottom) terminal.scrollToBottom()
         else terminal.scrollToLine(viewportY)
       })
@@ -257,7 +268,32 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
         if (!terminal) return
         const raw = atob(sig.bytes)
         const bytesArr = Uint8Array.from(raw, c => c.charCodeAt(0))
-        terminal.write(bytesArr, () => terminalSessionStore.confirmFrame(paneId, sig.seq))
+        if (historyReady) {
+          terminal.write(bytesArr, () => terminalSessionStore.confirmFrame(paneId, sig.seq))
+          return
+        }
+        // 历史预填充就绪前缓存帧；首个 full 帧触发拉历史（recent_unwrapped 快照按行
+        // 写入，超出视口的行进 scrollback），历史写完再按序回放缓存帧——full/diff 帧
+        // 不清空 scrollback，滚轮即可翻看之前输出
+        if (!historySeeded) {
+          historySeeded = true
+          void fetchTerminalBootstrap(paneId, 500, signal, 'recent_unwrapped')
+            .then(hist => {
+              if (signal.aborted) return
+              const t = terminalRef.current
+              if (!t) return
+              t.write(trimAnsiSnapshotPadding(hist.text), () => {
+                historyReady = true
+                flushFrames()
+              })
+            })
+            .catch(() => {
+              historyReady = true
+              flushFrames()
+            })
+        }
+        pendingFrames.push({ bytesArr, seq: sig.seq })
+        return
       } else if (sig.status === 'observing') {
         observerSucceeded = true
         setMode('observer')
@@ -276,7 +312,8 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
         if (!observerSucceeded) startSnapshot()
         else { setConflict(false); setSyncError(sig.message ?? null); setSyncStatus('error') }
       } else if (sig.status === 'closed') {
-        if (!observerSucceeded) startSnapshot()
+        // 流结束/服务端 session 回收（agent 任务结束等）：回退快照轮询保持内容最新
+        startSnapshot()
       }
     }
 
