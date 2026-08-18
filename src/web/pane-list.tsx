@@ -1,8 +1,16 @@
 // 会话页右侧 pane 状态列表面板（shell.overlay）+ 新建会话（hero）浮层看板 + Herdr logo。
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
-import { dotState, filterGroupsToSession, shouldAutoExpand, toggleCollapse } from '../client-logic.ts'
+import {
+  ariaStateLabel,
+  dotState,
+  filterGroupsToSession,
+  paneDisplayState,
+  paneKeyboardHandlers,
+  shouldAutoExpand,
+  toggleCollapse,
+} from '../client-logic.ts'
 import { t, useHerdrLang } from './i18n.ts'
 import { useFloatingDrag, SNAP } from './floating-drag.ts'
 import { HERDR_LOGO_PATH_D } from './logo-path.ts'
@@ -163,6 +171,8 @@ export function HerdrPaneList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [collapsed])
 
+  const panelIdPrefix = useId()
+
   // 非 herdr 模式不渲染面板（D1 已确认：与 Tab/胶囊一致门控）
   if (!inSession || !herdrMode) return null
 
@@ -204,7 +214,7 @@ export function HerdrPaneList() {
     >
       <div className="pane-list-head" {...dragHandlers}>
         <span className="pane-list-title">herdr</span>
-        <span className="pane-list-meta">{wsCount} ws · {paneCount} panes</span>
+        <span className="pane-list-meta">{t('view.listMeta', { workspaces: wsCount, panes: paneCount })}</span>
         <button
           className="pane-list-logo"
           title={t('panel.collapseToLogo')}
@@ -217,7 +227,7 @@ export function HerdrPaneList() {
           <HerdrLogo className="logo-svg" />
         </button>
       </div>
-      {error ? <div className="herdr-server-error" style={{ padding: '0 12px 6px' }}>herdr status: {error}</div> : null}
+      {error ? <div className="herdr-pane-list-error">{t('view.statusError', { error })}</div> : null}
       <div className="pane-list-body">
         {groups.length === 0 ? (
           <div className="herdr-empty">
@@ -225,34 +235,63 @@ export function HerdrPaneList() {
           </div>
         ) : groups.map(g => (
           <div key={g.workspace.workspace_id} className="pl-group" data-collapsed={collapsedWs.has(g.workspace.workspace_id) || undefined}>
-            <div className="pl-group-head" onClick={() => toggleWs(g.workspace.workspace_id)}>
+            <div
+              id={`${panelIdPrefix}-${g.workspace.workspace_id}-toggle`}
+              className="pl-group-head"
+              role="button"
+              tabIndex={0}
+              aria-expanded={!collapsedWs.has(g.workspace.workspace_id)}
+              aria-controls={`${panelIdPrefix}-${g.workspace.workspace_id}-body`}
+              onClick={() => toggleWs(g.workspace.workspace_id)}
+              onKeyDown={e => {
+                const action = paneKeyboardHandlers(e.key)
+                if (!action.trigger) return
+                if (action.preventDefault) e.preventDefault()
+                toggleWs(g.workspace.workspace_id)
+              }}
+            >
               <svg className="chev" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4z" /></svg>
               <span>{g.workspace.label || g.workspace.workspace_id}</span>
               <span className="ws">{g.workspace.workspace_id}</span>
               <span className="n">{g.panes.length}</span>
             </div>
-            <div className="pl-group-body">
+            <div
+              id={`${panelIdPrefix}-${g.workspace.workspace_id}-body`}
+              className="pl-group-body"
+            >
               {g.panes.map(pane => {
                 const agent = agentByPane.get(pane.pane_id)
                 const status = agent?.status ?? pane.agent_status
+                const displayState = paneDisplayState(status)
                 const isSelf = pane.pane_id === selfPaneId
-                const muted = !status || status === 'unknown'
+                const muted = displayState === 'unknown'
+                const stateLabel = t(ariaStateLabel(displayState))
+                const rowLabel = isSelf ? t('panel.selfTitle', { id: pane.pane_id }) : t('panel.paneTitle', { id: pane.pane_id })
                 return (
                   <div
                     key={pane.pane_id}
                     className="pl-row"
+                    role="button"
+                    tabIndex={0}
                     data-self={isSelf || undefined}
                     data-pane-id={pane.pane_id}
-                    title={isSelf ? t('panel.selfTitle', { id: pane.pane_id }) : t('panel.paneTitle', { id: pane.pane_id })}
+                    aria-label={rowLabel}
+                    title={rowLabel}
                     onPointerDown={e => e.stopPropagation()}
                     onClick={() => focusPaneInHerdrTab(pane.pane_id)}
+                    onKeyDown={e => {
+                      const action = paneKeyboardHandlers(e.key)
+                      if (!action.trigger) return
+                      if (action.preventDefault) e.preventDefault()
+                      focusPaneInHerdrTab(pane.pane_id)
+                    }}
                   >
                     <StateDot state={dotState(status)} className={muted ? 'herdr-dot-muted' : undefined} />
                     <span className="pl-paneid">{pane.pane_id}</span>
                     <span className="pl-agent">{agent?.agent ?? '—'}</span>
                     {isSelf ? <span className="pl-self-tag">{t('panel.selfTag')}</span> : null}
-                    <span className="pl-state" data-state={agent ? dotState(status) : undefined}>
-                      {status ?? t('panel.plainTerminal')}
+                    <span className="pl-state" data-state={displayState} aria-label={stateLabel}>
+                      {stateLabel}
                     </span>
                   </div>
                 )

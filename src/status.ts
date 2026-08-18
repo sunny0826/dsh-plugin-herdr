@@ -5,6 +5,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { HerdrClient } from './client/index.ts'
 import { HerdrError } from './client/error.ts'
 import { socketPing } from './client/socket.ts'
+import { truncateAnsiTail } from './client-logic.ts'
 import { createLogger, createRateLimiter, errText } from './log.ts'
 import { isPathWithinProject } from './paths.ts'
 import { getBoundPaneIds } from './binding-registry.ts'
@@ -21,8 +22,10 @@ export interface HerdrAgentStatus {
   kind?: string
   status: string
   message?: string
-  /** 最近输出（只读；服务端轮询 pane.read 的全量快照，上限截断）。 */
+  /** 最近输出（只读；服务端轮询 pane.read 的全量快照，format:'ansi' 可含 ANSI SGR）。 */
   output: string
+  /** 输出是否被截断（服务器 truncated 或客户端 OUTPUT_CAP/transport cap）。 */
+  outputTruncated?: boolean
   updated_at: number
 }
 
@@ -578,12 +581,14 @@ export class HerdrStatusTracker {
       try {
         // 实测（env-findings v2）：recent_unwrapped 是 herdr 原生未折行快照（逻辑行），
         // 避免窄终端（约 35~40 列）折行导致卡片日志每行过短、右侧大片空白
-        const { text } = await this.client.paneRead({ pane_id: paneId, source: 'recent_unwrapped', lines: 300 })
+        const { text, truncated } = await this.client.paneRead({ pane_id: paneId, source: 'recent_unwrapped', lines: 300, format: 'ansi' })
         if (signal.aborted) return
         const current = agent.output
         // 仅当内容变化时更新（避免无谓的 updated_at 抖动）
         if (text !== current) {
-          agent.output = text.slice(-OUTPUT_CAP)
+          // ANSI 安全截断：不在 escape/CSI/OSC 中间截断
+          agent.output = truncateAnsiTail(text, OUTPUT_CAP)
+          agent.outputTruncated = truncated || text.length > OUTPUT_CAP
           agent.updated_at = Date.now()
         }
       } catch (err) {

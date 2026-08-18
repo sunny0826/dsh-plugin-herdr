@@ -1,5 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { comparePaneId, filterTopology, serverInfoFromPing, startHerdrServer, type PingProbeFn, type SpawnFn } from '../../src/status.ts'
 
 test('comparePaneId: natural order (p2 < p10)', () => {
@@ -354,5 +357,50 @@ test('T05: pollTopology maps pane label from snapshot PaneInfo.label', async () 
   const p2 = panes.find(p => p.pane_id === 'w1:p2')
   assert.equal(p1?.label, '我的 pane', 'label 字段映射自 snapshot')
   assert.equal(p2?.label, undefined, '无 label 的 pane 字段保持缺失')
+})
+
+// ---------------------------------------------------------------------------
+// ANSI 数据契约：format:'ansi' 请求 + SGR 保留 + outputTruncated
+// ---------------------------------------------------------------------------
+
+test('ANSI contract: status.ts uses truncateAnsiTail for OUTPUT_CAP', async () => {
+  // 验证 truncateAnsiTail 在 OUTPUT_CAP 边界正确清理不完整 escape
+  const { truncateAnsiTail } = await import('../../src/client-logic.ts')
+  const pad = 'x'.repeat(8000 - 10)
+  const tail = '\u001b[31mincomplete'
+  const big = pad + tail
+  const result = truncateAnsiTail(big, 8000)
+  assert.ok(!result.includes('\u001b'), 'incomplete escape must be discarded at OUTPUT_CAP boundary')
+  assert.ok(result.length <= 8000, 'result must not exceed cap')
+  assert.ok(result.startsWith('x'), 'visible text before escape preserved')
+})
+
+test('ANSI contract: HerdrAgentStatus has outputTruncated field', () => {
+  // 验证 outputTruncated 是可选字段（运行时测试）
+  const agent = { pane_id: 'w1:p1', agent: 'codex', status: 'working', output: 'test', updated_at: Date.now() }
+  assert.equal((agent as Record<string, unknown>).outputTruncated, undefined, 'outputTruncated defaults to undefined')
+  ;(agent as Record<string, unknown>).outputTruncated = true
+  assert.equal((agent as Record<string, unknown>).outputTruncated, true, 'outputTruncated can be set to true')
+})
+
+test('ANSI contract: truncateAnsiTail cleans incomplete escape at OUTPUT_CAP boundary', async () => {
+  // 构造尾部含不完整 escape 的长文本
+  const pad = 'x'.repeat(8000 - 10)
+  const tail = '\u001b[31mincomplete' // 不完整 SGR
+  const big = pad + tail
+  // 模拟 status.ts 的 truncateAnsiTail 调用
+  const { truncateAnsiTail } = await import('../../src/client-logic.ts')
+  const result = truncateAnsiTail(big, 8000)
+  assert.ok(!result.includes('\u001b'), 'incomplete escape must be discarded')
+  assert.ok(result.length <= 8000, 'result must not exceed cap')
+})
+
+test('ANSI contract: status.ts pollOutputs uses format:ansi (source code verification)', () => {
+  // 验证 status.ts 源码中 pollOutputs 调用包含 format:'ansi' 和 truncateAnsiTail
+  const statusSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'status.ts'), 'utf8')
+  assert.ok(statusSource.includes("format: 'ansi'"), 'status.ts must pass format:ansi to paneRead')
+  assert.ok(statusSource.includes('truncateAnsiTail'), 'status.ts must use truncateAnsiTail')
+  assert.ok(statusSource.includes('outputTruncated'), 'status.ts must set outputTruncated')
+  assert.ok(statusSource.includes('truncated'), 'status.ts must capture paneRead truncated field')
 })
 

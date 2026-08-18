@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { HerdrClient } from './index.ts'
 import { HerdrError } from './error.ts'
 import { MAX_CLI_OUTPUT_BYTES, truncateUtf8Bytes } from './output.ts'
+import { truncateAnsiTail } from '../client-logic.ts'
 import { pollPaneUntilStable } from './poll.ts'
 import type { HerdrResultMap } from './types.ts'
 import type {
@@ -49,15 +50,24 @@ interface SocketEnvelope {
  * 上报服务器 truncated 标志（pane_read 分支真实字段），并做客户端 1 MiB 兜底截断
  * （服务器可能不截断）。
  */
-function capReadText(read: { text?: string; truncated?: boolean } | undefined): { text: string; truncated: boolean } {
+function capReadText(read: { text?: string; truncated?: boolean; revision?: number } | undefined): { text: string; truncated: boolean; revision?: number } {
   let text = read?.text ?? ''
   let truncated = read?.truncated === true
-  // codex review P2：按 UTF-8 字节截断（非 ASCII 中文/emoji 不得虚高）
+  const revision = read?.revision
+  // CA-014：按 UTF-8 字节截断（非 ASCII 中文/emoji 不得虚高）
   if (Buffer.byteLength(text) > MAX_CLI_OUTPUT_BYTES) {
     text = truncateUtf8Bytes(text, MAX_CLI_OUTPUT_BYTES)
     truncated = true
   }
-  return { text, truncated }
+  // ANSI 安全收尾：字节截断可能在 ESC/CSI/OSC 中间断开，清理残片
+  if (text.includes('\u001b')) {
+    const cleaned = truncateAnsiTail(text, text.length)
+    if (cleaned.length < text.length) {
+      text = cleaned
+      truncated = true
+    }
+  }
+  return { text, truncated, revision }
 }
 
 const sleep = (ms: number) => new Promise<void>(res => setTimeout(res, ms))
@@ -265,16 +275,46 @@ export class SocketHerdrClient extends HerdrClient {
     await this.callOnce('pane.send_keys', { pane_id: req.pane_id, keys: req.keys })
   }
 
-  async paneRead(req: PaneReadRequest): Promise<{ text: string; truncated: boolean }> {
+  async paneSendInput(req: { pane_id: string; text?: string; keys?: string[] }): Promise<void> {
+    await this.callOnce('pane.send_input', { pane_id: req.pane_id, text: req.text, keys: req.keys })
+  }
+
+  async paneRead(req: PaneReadRequest): Promise<{ text: string; truncated: boolean; revision?: number }> {
     const { result } = await this.callOnce('pane.read', {
       pane_id: req.pane_id,
       source: req.source ?? 'recent',
       lines: req.lines ?? null,
       format: req.format ?? 'text',
     })
-    // 响应结构：{ type: 'pane_read', read: { text, truncated, ... } }（CA-004：pane_read 分支生成类型）
-    // CA-014：与传输无关——上报服务器 truncated 标志，并做客户端侧 1 MiB 兜底上限
     return capReadText((result as HerdrResultMap['pane.read'] | undefined)?.read)
+  }
+
+  async paneWaitForOutputChange(
+    req: { pane_id: string; min_revision: number; timeout_ms?: number },
+    signal?: AbortSignal,
+  ): Promise<{ changed: boolean; revision: number }> {
+    const timeoutMs = req.timeout_ms ?? 25_000
+    try {
+      const { result } = await this.callOnce('events.wait', {
+        match_event: {
+          event: 'pane_output_changed',
+          pane_id: req.pane_id,
+          min_revision: req.min_revision,
+        },
+        timeout_ms: timeoutMs,
+      }, { timeoutMs: timeoutMs + 5_000, signal })
+      const event = (result as HerdrResultMap['events.wait'] | undefined)?.event
+      const data = event?.data
+      if (data?.type !== 'pane_output_changed' || data.pane_id !== req.pane_id) {
+        throw new HerdrError('HERDR_PROTOCOL', 'events.wait response missing pane_output_changed event')
+      }
+      return { changed: true, revision: data.revision }
+    } catch (err) {
+      if (err instanceof HerdrError && err.serverCode === 'timeout') {
+        return { changed: false, revision: req.min_revision }
+      }
+      throw err
+    }
   }
 
   async paneLayout(req: PaneLayoutRequest): Promise<unknown> {

@@ -6,16 +6,17 @@
 // 布局纯函数在 client-logic（layoutTreemap/agentKindCounts）。
 
 import { useEffect, useRef, useState } from 'react'
-import { agentKindCounts, layoutTreemap } from '../client-logic.ts'
+import { agentKindCounts, layoutTreemap, normalizeDashboardKind, normalizeDashboardKindCounts, paneDisplayState } from '../client-logic.ts'
 import { t, useHerdrLang } from './i18n.ts'
+import { StatusChips } from './dashboard-summary.tsx'
 import type { HerdrDashboardAgent, HerdrDashboardSnapshot, HerdrDashboardWorkspace } from './dashboard-types.ts'
 
 /** Treemap 区块高度（固定；宽度随容器 ResizeObserver 重算）。 */
 const TREEMAP_HEIGHT = 110
 
-/** kind → 图例标签（未知回退 unknown）。 */
 function kindLabel(kind: string): string {
-  return kind === 'unknown' ? t('dashboard.unknown') : kind
+  const normalized = normalizeDashboardKind(kind)
+  return normalized === 'unknown' ? t('dashboard.unknown') : normalized
 }
 
 /** 单个 workspace 的内部 Treemap（kind 计数 → 矩形布局；kind 块可点击跳转）。 */
@@ -38,14 +39,17 @@ function WorkspaceTreemap({ ws, onPaneClick, onNotice }: {
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  const kinds = agentKindCounts(ws.agents ?? []).map(k => ({ key: k.kind, value: k.value }))
+  const kinds = normalizeDashboardKindCounts(agentKindCounts(ws.agents ?? [])).map(entry => ({
+    key: entry.kind,
+    value: entry.value,
+  }))
   const rects = layoutTreemap(kinds, Math.max(0, width), TREEMAP_HEIGHT)
   if (kinds.length === 0) {
     return <div className="herdr-tm-empty">{t('dashboard.treemapEmpty')}</div>
   }
   // kind 块点击：唯一 agent → 跳转；多个 → 提示无法定位
   const activateKind = (kind: string) => {
-    const agentsOfKind = (ws.agents ?? []).filter(a => a.kind === kind)
+    const agentsOfKind = (ws.agents ?? []).filter(agent => normalizeDashboardKind(agent.kind) === kind)
     if (agentsOfKind.length === 1) {
       onPaneClick?.(agentsOfKind[0])
     } else if (agentsOfKind.length > 1) {
@@ -76,12 +80,22 @@ function WorkspaceTreemap({ ws, onPaneClick, onNotice }: {
             }
           }}
         >
-          {/* 小块内只放 kind 缩写/计数（宽度足够时）；aria-label 始终有完整信息 */}
-          <span className="herdr-tm-label" aria-hidden>{r.key}</span>
+          <span className="herdr-tm-label" aria-hidden>{kindLabel(r.key)} · {r.value}</span>
         </div>
       ))}
     </div>
   )
+}
+
+function WorkspaceStatusChips({ ws }: { ws: HerdrDashboardWorkspace }) {
+  const counts: Record<string, number> = {}
+  for (const agent of ws.agents ?? []) {
+    const displayState = paneDisplayState(agent.status)
+    counts[displayState] = (counts[displayState] ?? 0) + 1
+  }
+  const entries = Object.entries(counts).filter(([, count]) => count > 0)
+  if (entries.length === 0) return null
+  return <StatusChips counts={counts} />
 }
 
 export function DashboardWorkspaces({ snap, onPaneClick, onNotice }: {
@@ -109,21 +123,28 @@ export function DashboardWorkspaces({ snap, onPaneClick, onNotice }: {
             <div className="herdr-dash-ws-head">
               <span className="herdr-dash-ws-label">{ws.label ?? ws.workspace_id}</span>
               <span className="herdr-dash-ws-id">{ws.workspace_id}</span>
+              {ws.checkout_path_base ? (
+                <span className="herdr-dash-ws-meta" title={t('dashboard.checkoutBase')}>{ws.checkout_path_base}</span>
+              ) : null}
               <span className="herdr-dash-ws-meta">
                 {ws.agent_count} {t('dashboard.agents')} · {ws.pane_count} {t('dashboard.panes')}
               </span>
             </div>
             <WorkspaceTreemap ws={ws} onPaneClick={onPaneClick} onNotice={onNotice} />
-            {ws.agents_working > 0 || ws.agents_blocked > 0 ? (
-              <div className="herdr-dash-ws-chips">
-                {ws.agents_working > 0 ? (
-                  <span className="herdr-dash-chip" data-state="working"><b>{ws.agents_working}</b> {t('dashboard.working')}</span>
-                ) : null}
-                {ws.agents_blocked > 0 ? (
-                  <span className="herdr-dash-chip" data-state="blocked"><b>{ws.agents_blocked}</b> {t('dashboard.blocked')}</span>
-                ) : null}
+            {/* Treemap 图例：kind → 颜色映射 */}
+            {(ws.agents ?? []).length > 0 ? (
+              <div className="herdr-tm-legend">
+                <span>{t('dashboard.legend')}:</span>
+                {[...new Set((ws.agents ?? []).map(agent => normalizeDashboardKind(agent.kind)))].map(kind => (
+                  <span key={kind} className="herdr-tm-legend-item">
+                    <span className="herdr-tm-legend-dot" data-kind={kind} />
+                    <span>{kindLabel(kind)}</span>
+                  </span>
+                ))}
               </div>
             ) : null}
+            {/* workspace 状态 chips：显示所有非零状态（P2-6 一致性修复） */}
+            <WorkspaceStatusChips ws={ws} />
           </div>
         ))}
       </div>

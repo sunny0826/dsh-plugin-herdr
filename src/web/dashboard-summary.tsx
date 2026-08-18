@@ -1,5 +1,5 @@
 // Dashboard 摘要卡片（design: dashboard-global v4 —— Herdr 服务卡片合并进程；
-// Agents 卡片显示所有 agent 名称；长列表滚动 + 显示全部/收起）。
+// 代理 卡片显示所有代理 名称；长列表滚动 + 显示全部/收起）。
 
 import { useState, type ReactNode } from 'react'
 import {
@@ -7,13 +7,15 @@ import {
   formatBytes,
   formatDuration,
   formatTime,
+  normalizeDashboardKind,
+  paneDisplayState,
   sortedStatusCounts,
 } from '../client-logic.ts'
 import { t, useHerdrLang, type I18nKey } from './i18n.ts'
+import type { PaneDisplayState } from '../client-logic.ts'
 import type { HerdrDashboardSnapshot, HerdrDashboardAgent } from './dashboard-types.ts'
 
-/** agent 状态 → 面板标签 key（未知状态回退 unknown）。 */
-const STATUS_LABEL_KEYS: Record<string, I18nKey> = {
+export const STATUS_LABEL_KEYS: Record<PaneDisplayState, I18nKey> = {
   working: 'dashboard.working',
   idle: 'dashboard.idle',
   blocked: 'dashboard.blocked',
@@ -21,15 +23,28 @@ const STATUS_LABEL_KEYS: Record<string, I18nKey> = {
   unknown: 'dashboard.unknown',
 }
 
+function statusLabelKey(status: string): I18nKey {
+  return STATUS_LABEL_KEYS[paneDisplayState(status)]
+}
+
 /** 状态分布 chips（稳定顺序：working/blocked/idle/done/unknown）。 */
 export function StatusChips({ counts }: { counts: Record<string, number> }) {
+  void useHerdrLang()
+  const normalizedCounts = Object.entries(counts).reduce<Record<string, number>>((normalized, [status, count]) => {
+    const displayState = paneDisplayState(status)
+    normalized[displayState] = (normalized[displayState] ?? 0) + count
+    return normalized
+  }, {})
   return (
     <div className="herdr-dash-ws-chips">
-      {sortedStatusCounts(counts).map(([status, n]) => (
-        <span key={status} className="herdr-dash-chip" data-state={status}>
-          <b>{n}</b> {t(STATUS_LABEL_KEYS[status] ?? 'dashboard.unknown')}
-        </span>
-      ))}
+      {sortedStatusCounts(normalizedCounts).map(([status, n]) => {
+        const displayState = paneDisplayState(status)
+        return (
+          <span key={displayState} className="herdr-dash-chip" data-state={displayState}>
+            <b>{n}</b> {t(statusLabelKey(displayState))}
+          </span>
+        )
+      })}
     </div>
   )
 }
@@ -54,40 +69,43 @@ export function DashboardRow({ label, value, mono }: { label: string; value: str
   )
 }
 
-/** agent 显示名：name → kind → 「未命名 agent」。 */
+/** 代理显示名：name → kind → 「未命名代理」。 */
 function agentDisplayName(a: HerdrDashboardAgent): string {
   if (a.name && a.name.trim() !== '') return a.name
-  if (a.kind && a.kind !== 'unknown') return a.kind
-  return t('dashboard.agentUnnamed')
+  const kind = normalizeDashboardKind(a.kind)
+  return kind === 'unknown' ? t('dashboard.agentUnnamed') : kind
 }
 
-/** Agents 卡片：总数/状态摘要 + 全名称列表（默认前 8 项，显示全部展开）。 */
+/** 代理 卡片：总数/状态摘要 + 全名称列表（默认前 8 项，显示全部展开）。 */
 function AgentsCard({ agents }: { agents: HerdrDashboardAgent[] }) {
   const [showAll, setShowAll] = useState(false)
   const visible = showAll ? agents : agents.slice(0, 8)
   return (
     <DashboardCard title={t('dashboard.agents')}>
-      <StatusChips counts={agents.reduce<Record<string, number>>((m, a) => {
-        m[a.status] = (m[a.status] ?? 0) + 1
-        return m
+      <StatusChips counts={agents.reduce<Record<string, number>>((counts, agent) => {
+        counts[agent.status] = (counts[agent.status] ?? 0) + 1
+        return counts
       }, {})} />
       <DashboardRow label={t('dashboard.agentsTotal')} value={String(agents.length)} />
       {agents.length > 0 ? (
         <ul className="herdr-dash-agent-list" data-collapsed={!showAll || undefined}>
-          {visible.map(a => (
-            <li key={a.pane_id} className="herdr-dash-agent-row">
-              <span className="herdr-dash-agent-dot" data-kind={a.kind} aria-hidden />
-              <span className="herdr-dash-agent-name" title={agentDisplayName(a)}>{agentDisplayName(a)}</span>
-              <span className="herdr-dash-agent-kind">{a.kind}</span>
-              <span className="herdr-dash-agent-status" data-state={a.status}>{t(STATUS_LABEL_KEYS[a.status] ?? 'dashboard.unknown')}</span>
-            </li>
-          ))}
+          {visible.map(agent => {
+            const kind = normalizeDashboardKind(agent.kind)
+            return (
+              <li key={agent.pane_id} className="herdr-dash-agent-row">
+                <span className="herdr-dash-agent-dot" data-kind={kind} aria-hidden />
+                <span className="herdr-dash-agent-name" title={agentDisplayName(agent)}>{agentDisplayName(agent)}</span>
+                <span className="herdr-dash-agent-kind">{kind}</span>
+                <span className="herdr-dash-agent-status" data-state={paneDisplayState(agent.status)}>{t(statusLabelKey(agent.status))}</span>
+              </li>
+            )
+          })}
         </ul>
       ) : (
         <div className="herdr-dash-row"><span className="herdr-dash-row-value">{t('dashboard.noData')}</span></div>
       )}
       {agents.length > 8 ? (
-        <button type="button" className="herdr-dash-link-btn" onClick={() => setShowAll(v => !v)}>
+        <button type="button" className="herdr-dash-link-btn" onClick={() => setShowAll(value => !value)}>
           {showAll ? t('dashboard.collapseAgents') : t('dashboard.showAllAgents')}
         </button>
       ) : null}
@@ -97,28 +115,28 @@ function AgentsCard({ agents }: { agents: HerdrDashboardAgent[] }) {
 
 /** Herdr 服务卡片：版本/协议合并一行 + 核心进程指标（PID/CPU/内存/运行时长）；采样时间并入 footer。 */
 function ServerCard({ snap }: { snap: HerdrDashboardSnapshot }) {
-  const p = snap.process
+  const process = snap.process
   const version = snap.server.version ? `v${snap.server.version}` : '—'
   const protocol = snap.server.protocol != null ? String(snap.server.protocol) : '—'
   return (
     <DashboardCard title={t('dashboard.server')}>
       <DashboardRow label={t('dashboard.versionProtocol')} value={`${version} · ${protocol}`} mono />
-      {p.available ? (
+      {process.available ? (
         <>
-          <DashboardRow label={t('dashboard.pid')} value={p.pid != null ? String(p.pid) : t('dashboard.unavailable')} mono />
-          <DashboardRow label={t('dashboard.cpu')} value={p.cpu_percent != null ? `${p.cpu_percent.toFixed(1)} %` : t('dashboard.unavailable')} />
-          <DashboardRow label={t('dashboard.memory')} value={p.rss_bytes != null ? (formatBytes(p.rss_bytes) ?? t('dashboard.unavailable')) : t('dashboard.unavailable')} />
-          <DashboardRow label={t('dashboard.uptime')} value={p.started_at != null ? (formatDuration(Math.max(0, p.sampled_at - p.started_at)) ?? '—') : '—'} mono />
+          <DashboardRow label={t('dashboard.pid')} value={process.pid != null ? String(process.pid) : t('dashboard.unavailable')} mono />
+          <DashboardRow label={t('dashboard.cpu')} value={process.cpu_percent != null ? `${process.cpu_percent.toFixed(1)} %` : t('dashboard.unavailable')} />
+          <DashboardRow label={t('dashboard.memory')} value={process.rss_bytes != null ? (formatBytes(process.rss_bytes) ?? t('dashboard.unavailable')) : t('dashboard.unavailable')} />
+          <DashboardRow label={t('dashboard.uptime')} value={process.started_at != null ? (formatDuration(Math.max(0, process.sampled_at - process.started_at)) ?? '—') : '—'} mono />
         </>
       ) : (
         <div className="herdr-dash-process-unavail">
           <span className="herdr-dash-stale-badge">{t('dashboard.unavailable')}</span>
-          <span>{t('dashboard.reason')}: {p.error ?? '—'}</span>
+          <span>{t('dashboard.reason')}: {process.error ?? '—'}</span>
         </div>
       )}
       <div className="herdr-dash-process-note">
         {t('dashboard.bestEffort')}
-        {p.sampled_at > 0 ? ` · ${t('dashboard.sampledHint', { time: formatTime(p.sampled_at) })}` : ''}
+        {process.sampled_at > 0 ? ` · ${t('dashboard.sampledHint', { time: formatTime(process.sampled_at) })}` : ''}
       </div>
     </DashboardCard>
   )
@@ -126,9 +144,20 @@ function ServerCard({ snap }: { snap: HerdrDashboardSnapshot }) {
 
 export function DashboardSummary({ snap }: { snap: HerdrDashboardSnapshot }) {
   void useHerdrLang()
-  const s = snap.summary
+  const summary = snap.summary
+  const allAgents = collectDashboardAgents(snap.workspaces)
   return (
     <section className="herdr-dash-section" aria-label={t('dashboard.overview')}>
+      <div className="herdr-dash-grid">
+        <DashboardCard title={t('dashboard.overview')}>
+          <DashboardRow label={t('dashboard.workspaces')} value={String(summary.workspaces)} />
+          <DashboardRow label={t('dashboard.tabs')} value={String(summary.tabs)} />
+          <DashboardRow label={t('dashboard.panes')} value={String(summary.panes)} />
+          <DashboardRow label={t('dashboard.agents')} value={String(summary.agents)} />
+          <StatusChips counts={summary.agents_by_status} />
+        </DashboardCard>
+        <AgentsCard agents={allAgents} />
+      </div>
       <div className="herdr-dash-grid">
         <ServerCard snap={snap} />
         <DashboardCard title={t('dashboard.socket')}>
@@ -149,7 +178,6 @@ export function DashboardSummary({ snap }: { snap: HerdrDashboardSnapshot }) {
           <DashboardRow label={t('dashboard.platform')} value={snap.host.platform} mono />
           <DashboardRow label={t('dashboard.arch')} value={snap.host.arch} mono />
         </DashboardCard>
-        <AgentsCard agents={collectDashboardAgents(snap.workspaces)} />
       </div>
     </section>
   )

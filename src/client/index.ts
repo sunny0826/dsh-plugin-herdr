@@ -122,11 +122,28 @@ export interface PaneSendKeysRequest {
   keys: string[]
 }
 
+export interface PaneSendInputRequest {
+  pane_id: string
+  text?: string
+  keys?: string[]
+}
+
 export interface PaneReadRequest {
   pane_id: string
   source?: 'visible' | 'recent' | 'recent_unwrapped' | 'detection'
   lines?: number
   format?: 'text' | 'ansi'
+}
+
+export interface PaneOutputChangeRequest {
+  pane_id: string
+  min_revision: number
+  timeout_ms?: number
+}
+
+export interface PaneOutputChangeResult {
+  changed: boolean
+  revision: number
 }
 
 export interface PaneLayoutRequest {
@@ -255,7 +272,9 @@ export abstract class HerdrClient extends Service {
   /** 重命名 pane；label 为空（null/空白）走 --clear 清除名称（T01-A/B）。 */
   abstract paneRename(paneId: string, label: string | null): Promise<void>
   abstract paneSendKeys(req: PaneSendKeysRequest): Promise<void>
-  abstract paneRead(req: PaneReadRequest): Promise<{ text: string; truncated: boolean }>
+  abstract paneSendInput(req: PaneSendInputRequest): Promise<void>
+  abstract paneRead(req: PaneReadRequest): Promise<{ text: string; truncated: boolean; revision?: number }>
+  abstract paneWaitForOutputChange(req: PaneOutputChangeRequest, signal?: AbortSignal): Promise<PaneOutputChangeResult>
   abstract paneLayout(req: PaneLayoutRequest): Promise<unknown>
   abstract layoutApply(req: LayoutApplyRequest): Promise<unknown>
   abstract agentPrompt(req: AgentPromptRequest, signal: AbortSignal): Promise<AgentPromptResult>

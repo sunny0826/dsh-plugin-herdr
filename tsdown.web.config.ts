@@ -35,4 +35,7 @@ export default defineConfig({
     '@deepseek-ai/dsh-client-ui-primitives',
     '@deepseek-ai/cordis',
   ],
+  deps: {
+    alwaysBundle: ['@xterm/xterm', '@xterm/addon-fit'],
+  },
 })

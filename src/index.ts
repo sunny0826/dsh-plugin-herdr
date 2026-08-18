@@ -6,7 +6,7 @@ import { setupEventForwarding } from './events/forward.ts'
 import { setupStateReporting } from './events/state-report.ts'
 import { HerdrStatusTracker, startHerdrServer } from './status.ts'
 import { HerdrDashboardTracker } from './dashboard.ts'
-import { getBindingRegistry, getBoundPaneIds, sessionIdFromTokens } from './binding-registry.ts'
+import { getBindingRegistry, getBoundPaneIds, getBoundWorkspaceIds, sessionIdFromTokens } from './binding-registry.ts'
 import { registerHerdrSkill } from './skill.ts'
 import { registerSnapshot } from './tools/snapshot.ts'
 import { registerAgentList } from './tools/agent-list.ts'
@@ -27,6 +27,11 @@ import { registerWorkspaceClose } from './tools/workspace-close.ts'
 import { registerPaneClose } from './tools/pane-close.ts'
 import { registerWorkspaceRename } from './tools/workspace-rename.ts'
 import { registerPaneRename } from './tools/pane-rename.ts'
+import { resolveTerminalSessionConfig } from './config.ts'
+import { probeTerminalSession, type TerminalSessionCapability } from './terminal-session/capability.ts'
+import { resolveSessionConnection } from './terminal-session/process.ts'
+import { TerminalSessionManager } from './terminal-session/manager.ts'
+import { registerTerminalSessionRoutes } from './terminal-session/routes.ts'
 
 // cordis 通过模块导出的 Config 校验插件配置并填充默认值
 export { Config } from './config.ts'
@@ -112,7 +117,21 @@ export function apply(ctx: Context, config: ConfigType) {
   let offStartRoute: (() => void) | null = null
   let offCloseRoute: (() => void) | null = null
   let offRenameRoute: (() => void) | null = null
+  let offPaneInputRoute: (() => void) | null = null
+  let offTerminalBootstrapRoute: (() => void) | null = null
+  let offTerminalWaitRoute: (() => void) | null = null
   let offDashboardRoute: (() => void) | null = null
+  let offTerminalSessionRoutes: (() => void) | null = null
+  // Pane 终端 Observer/Controller（design: pane-terminal-session-state-machine §6）
+  const terminalSessionCfg = resolveTerminalSessionConfig(config)
+  let terminalManager: TerminalSessionManager | null = null
+  let terminalCapability: TerminalSessionCapability | null = null
+  const ensureTerminalAvailable = async (): Promise<boolean> => {
+    if (!terminalCapability) {
+      terminalCapability = await probeTerminalSession({ binPath: terminalSessionCfg.binPath })
+    }
+    return terminalCapability.available
+  }
   ctx.inject(['webServer'], injected => {
     const webServer = (injected as unknown as { webServer: { register(r: unknown): () => void } }).webServer
     type Res = { writeHead(code: number, headers: Record<string, string>): void; end(body?: string): void }
@@ -135,6 +154,49 @@ export function apply(ctx: Context, config: ConfigType) {
         return false
       }
       return true
+    }
+    // Pane 终端 Observer/Controller 流式路由（design: pane-terminal-session-state-machine §6.3）
+    // 注意：webServer.register 是依赖 this 的实例方法，必须以绑定包装传入（裸传会把 this 变为
+    // undefined，register 内部 this.exact.set 抛错，进而使下方所有核心路由都不再注册）。
+    // 同时 try/catch 隔离：任何 terminal 路由初始化失败都不得拖垮 /herdr-status 等核心路由。
+    if (terminalSessionCfg.enabled) {
+      const conn = resolveSessionConnection(config)
+      if (conn.socketPath) {
+        try {
+          terminalManager = new TerminalSessionManager({
+            config: terminalSessionCfg,
+            ...(terminalSessionCfg.binPath ? { binPath: terminalSessionCfg.binPath } : {}),
+            socketPath: conn.socketPath,
+            ...(conn.session ? { session: conn.session } : {}),
+          })
+          offTerminalSessionRoutes = registerTerminalSessionRoutes((r) => webServer.register(r), {
+            manager: terminalManager,
+            ensureAvailable: ensureTerminalAvailable,
+            checkOwnership: async (paneId) => {
+            const boundWsIds = new Set(getBoundWorkspaceIds())
+            if (boundWsIds.size === 0) return true
+            try {
+              const snap = await ctx.herdr.snapshot()
+              const ws = snap.panes.find((p: { pane_id: string }) => p.pane_id === paneId)?.workspace_id
+              return !!ws && boundWsIds.has(ws)
+            } catch {
+              return false
+            }
+          },
+          guard: (res, req, method) => guard(res as Res, req, method),
+          reject: (res, status, message) => reject(res as Res, status, message),
+          sendJson: (res, status, obj) => {
+            const r = res as Res
+            r.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+            r.end(JSON.stringify(obj))
+          },
+        })
+        } catch (err) {
+          terminalManager = null
+          offTerminalSessionRoutes = null
+          createLogger(ctx, 'index').warn('terminal session 路由注册失败，已禁用: %s', err instanceof Error ? err.message : String(err))
+        }
+      }
     }
     // M5 状态看板数据源：GET /herdr-status
     offRoute = webServer.register({
@@ -342,6 +404,179 @@ export function apply(ctx: Context, config: ConfigType) {
         }
       },
     })
+    // v2 终端输入路由：POST /herdr-pane-input（交互式终端写回）
+    offPaneInputRoute = webServer.register({
+      kind: 'exact',
+      path: '/herdr-pane-input',
+      handler: async (req: unknown, res: Res) => {
+        if (!guard(res, req, 'POST')) return
+        let body: { pane_id?: string; kind?: string; text?: string; keys?: string[] }
+        try {
+          const parsed = (await readJsonBody(req)) as Record<string, unknown>
+          body = {
+            pane_id: typeof parsed.pane_id === 'string' ? parsed.pane_id : undefined,
+            kind: typeof parsed.kind === 'string' ? parsed.kind : undefined,
+            text: typeof parsed.text === 'string' ? parsed.text : undefined,
+            keys: Array.isArray(parsed.keys) ? parsed.keys.filter((k): k is string => typeof k === 'string') : undefined,
+          }
+        } catch {
+          reject(res, 400, 'invalid JSON body')
+          return
+        }
+        if (!body.pane_id || body.pane_id.trim() === '') {
+          reject(res, 400, 'pane_id must be a non-empty string')
+          return
+        }
+        if (body.kind !== undefined && body.kind !== 'text' && body.kind !== 'keys') {
+          reject(res, 400, "kind must be 'text' or 'keys'")
+          return
+        }
+        const hasText = body.text != null && body.text.length > 0
+        const hasKeys = body.keys != null && body.keys.length > 0
+        if (!hasText && !hasKeys) {
+          reject(res, 400, 'text or keys is required')
+          return
+        }
+        if (body.kind === 'text' && !hasText) {
+          reject(res, 400, 'text is required for kind=text')
+          return
+        }
+        if (body.kind === 'keys' && !hasKeys) {
+          reject(res, 400, 'keys is required for kind=keys')
+          return
+        }
+        if (hasText) {
+          if (Buffer.byteLength(body.text!, 'utf8') > 64 * 1024) {
+            reject(res, 400, 'text exceeds 64KB limit')
+            return
+          }
+        }
+        if (hasKeys) {
+          if (body.keys!.length > 32) {
+            reject(res, 400, 'keys array exceeds 32 item limit')
+            return
+          }
+        }
+        // workspace ownership check：只允许当前会话绑定 workspace 内的 pane
+        // （设计 §3.4：workspace 归属校验，非 pane 绑定校验）
+        const boundWsIds = new Set(getBoundWorkspaceIds())
+        if (boundWsIds.size > 0) {
+          // 查找目标 pane 的 workspace_id（从 topology 快照）
+          try {
+            const snap = await ctx.herdr.snapshot()
+            const targetWs = snap.panes.find(p => p.pane_id === body.pane_id)?.workspace_id
+            if (!targetWs || !boundWsIds.has(targetWs)) {
+              reject(res, 403, 'pane not accessible from this session')
+              return
+            }
+          } catch {
+            // 快照失败：拒绝（不放行）
+            reject(res, 503, 'unable to verify pane ownership')
+            return
+          }
+        }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        try {
+          await ctx.herdr.paneSendInput({ pane_id: body.pane_id, text: body.text, keys: body.keys })
+          res.end(JSON.stringify({ ok: true }))
+        } catch (e) {
+          res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
+        }
+      },
+    })
+    // 终端 bootstrap 路由：GET /herdr-pane-terminal-bootstrap（当前 viewport ANSI 快照）
+    offTerminalBootstrapRoute = webServer.register({
+      kind: 'exact',
+      path: '/herdr-pane-terminal-bootstrap',
+      handler: async (req: unknown, res: Res) => {
+        if (!guard(res, req, 'GET')) return
+        const url = new URL((req as { url?: string }).url ?? '/', 'http://localhost')
+        const paneId = url.searchParams.get('pane_id')
+        if (!paneId || paneId.trim() === '') {
+          reject(res, 400, 'pane_id query parameter is required')
+          return
+        }
+        // workspace ownership check
+        const boundWsIds = new Set(getBoundWorkspaceIds())
+        if (boundWsIds.size > 0) {
+          try {
+            const snap = await ctx.herdr.snapshot()
+            const targetWs = snap.panes.find((p: { pane_id: string }) => p.pane_id === paneId)?.workspace_id
+            if (!targetWs || !boundWsIds.has(targetWs)) {
+              reject(res, 403, 'pane not accessible from this session')
+              return
+            }
+          } catch {
+            reject(res, 503, 'unable to verify pane ownership')
+            return
+          }
+        }
+        const lines = parseInt(url.searchParams.get('lines') ?? '500', 10)
+        const maxLines = Math.min(Math.max(lines, 100), 50000)
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        try {
+          const result = await ctx.herdr.paneRead({
+            pane_id: paneId,
+            source: 'visible',
+            lines: maxLines,
+            format: 'ansi',
+          })
+          res.end(JSON.stringify({
+            ok: true,
+            text: result.text,
+            revision: result.revision,
+            truncated: result.truncated,
+          }))
+        } catch (e) {
+          res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
+        }
+      },
+    })
+    // 终端输出变化长轮询：events.wait(pane_output_changed + min_revision)。
+    offTerminalWaitRoute = webServer.register({
+      kind: 'exact',
+      path: '/herdr-pane-terminal-wait',
+      handler: async (req: unknown, res: Res) => {
+        if (!guard(res, req, 'GET')) return
+        const url = new URL((req as { url?: string }).url ?? '/', 'http://localhost')
+        const paneId = url.searchParams.get('pane_id')
+        const revisionText = url.searchParams.get('after_revision')
+        const afterRevision = revisionText == null ? NaN : Number(revisionText)
+        if (!paneId || paneId.trim() === '') {
+          reject(res, 400, 'pane_id query parameter is required')
+          return
+        }
+        if (!Number.isSafeInteger(afterRevision) || afterRevision < 0) {
+          reject(res, 400, 'after_revision must be a non-negative integer')
+          return
+        }
+        const boundWsIds = new Set(getBoundWorkspaceIds())
+        if (boundWsIds.size > 0) {
+          try {
+            const snap = await ctx.herdr.snapshot()
+            const targetWs = snap.panes.find((p: { pane_id: string }) => p.pane_id === paneId)?.workspace_id
+            if (!targetWs || !boundWsIds.has(targetWs)) {
+              reject(res, 403, 'pane not accessible from this session')
+              return
+            }
+          } catch {
+            reject(res, 503, 'unable to verify pane ownership')
+            return
+          }
+        }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        try {
+          const result = await ctx.herdr.paneWaitForOutputChange({
+            pane_id: paneId,
+            min_revision: afterRevision,
+            timeout_ms: 25_000,
+          })
+          res.end(JSON.stringify({ ok: true, ...result }))
+        } catch (e) {
+          res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }))
+        }
+      },
+    })
   })
   tracker.start()
   dashboardTracker.start()
@@ -370,7 +605,13 @@ export function apply(ctx: Context, config: ConfigType) {
       offStartRoute?.()
       offCloseRoute?.()
       offRenameRoute?.()
+      offPaneInputRoute?.()
+      offTerminalBootstrapRoute?.()
+      offTerminalWaitRoute?.()
       offDashboardRoute?.()
+      offTerminalSessionRoutes?.()
+      terminalManager?.dispose()
+      terminalManager = null
       stopSkill()
       stopForwarding()
       stopReporting()

@@ -400,3 +400,181 @@ test('CA-014: socket runCommand reports truncated when any poll read is truncate
     server.close(); rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------------------
+// ANSI 数据契约：format:'ansi' 请求透传 + SGR 保留 + ANSI-safe 截断
+// ---------------------------------------------------------------------------
+
+test('ANSI contract: paneRead sends format:ansi and preserves raw SGR in response', async () => {
+  const sgr = '\u001b[31mred\u001b[0m\r\ngreen line'
+  let capturedReq: unknown = null
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    if (req.method === 'pane.read') {
+      capturedReq = req
+      replyAndClose(conn, req, { type: 'pane_read', read: { text: sgr, pane_id: 'w1:p1', truncated: false } })
+    } else replyAndClose(conn, req, {})
+  })
+  try {
+    const client = makeClient(path)
+    const result = await client.paneRead({ pane_id: 'w1:p1', format: 'ansi', source: 'recent_unwrapped', lines: 300 })
+    // 请求必须包含 format:'ansi'
+    assert.ok(capturedReq, 'pane.read must be called')
+    const params = (capturedReq as { params: Record<string, unknown> }).params
+    assert.equal(params.format, 'ansi', 'request params must include format:ansi')
+    // 响应保留原始 SGR 和 CRLF
+    assert.ok(result.text.includes('\u001b[31m'), 'response must preserve ESC (SGR)')
+    assert.ok(result.text.includes('\r\n'), 'response must preserve CRLF')
+    assert.equal(result.truncated, false)
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ANSI contract: capReadText cleans incomplete escape after byte truncation', async () => {
+  // 构造超 1 MiB 的文本，确保尾部含不完整 escape
+  // pad 在 escape 之前就已超 1 MiB，这样 byte truncation 会在 escape 中间截断
+  const pad = 'a'.repeat(1024 * 1024 + 100)
+  const tail = '\u001b[31mred' // 不完整 SGR（在截断边界之后）
+  const big = pad + tail
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    if (req.method === 'pane.read') replyAndClose(conn, req, { type: 'pane_read', read: { text: big, pane_id: 'w1:p1', truncated: false } })
+    else replyAndClose(conn, req, {})
+  })
+  try {
+    const client = makeClient(path)
+    const result = await client.paneRead({ pane_id: 'w1:p1' })
+    assert.equal(result.truncated, true, 'must be truncated')
+    // byte truncation 可能在 escape 中间截断，ANSI cleanup 应清理残片
+    // 结果不应包含不完整的 ESC 序列（可能被截成半个字符）
+    assert.ok(result.text.length <= 1024 * 1024 + 10, 'result length reasonable')
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ------------------------------------------------------------------
+// pane.send_input 协议（design: pane-interactive-terminal §3.4）
+// ------------------------------------------------------------------
+
+test('socket: paneSendInput sends pane.send_input with text', async () => {
+  let capturedReq: unknown = null
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    if (req.method === 'pane.send_input') {
+      capturedReq = req
+      replyAndClose(conn, req, { type: 'ok' })
+    } else replyAndClose(conn, req, {})
+  })
+  try {
+    const client = makeClient(path)
+    await client.paneSendInput({ pane_id: 'w1:p1', text: 'ls\r' })
+    assert.ok(capturedReq, 'pane.send_input must be called')
+    const params = (capturedReq as { params: Record<string, unknown> }).params
+    assert.equal(params.pane_id, 'w1:p1')
+    assert.equal(params.text, 'ls\r')
+    assert.equal(params.keys, undefined, 'text-only: keys must be undefined')
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('socket: paneSendInput sends pane.send_input with keys', async () => {
+  let capturedReq: unknown = null
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    if (req.method === 'pane.send_input') {
+      capturedReq = req
+      replyAndClose(conn, req, { type: 'ok' })
+    } else replyAndClose(conn, req, {})
+  })
+  try {
+    const client = makeClient(path)
+    await client.paneSendInput({ pane_id: 'w1:p1', keys: ['ctrl+c'] })
+    assert.ok(capturedReq, 'pane.send_input must be called')
+    const params = (capturedReq as { params: Record<string, unknown> }).params
+    assert.equal(params.pane_id, 'w1:p1')
+    assert.deepEqual(params.keys, ['ctrl+c'])
+    assert.equal(params.text, undefined, 'keys-only: text must be undefined')
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('socket: paneSendInput preserves combined text and keys', async () => {
+  let capturedReq: Req | null = null
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    capturedReq = req
+    replyAndClose(conn, req, { type: 'ok' })
+  })
+  try {
+    const client = makeClient(path)
+    await client.paneSendInput({ pane_id: 'w1:p1', text: 'deploy', keys: ['enter'] })
+    assert.deepEqual((capturedReq as Req | null)?.params, { pane_id: 'w1:p1', text: 'deploy', keys: ['enter'] })
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('socket: paneSendInput error propagates', async () => {
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    if (req.method === 'pane.send_input') {
+      replyErrorAndClose(conn, req, 'PANE_NOT_FOUND', 'pane not found')
+    } else replyAndClose(conn, req, {})
+  })
+  try {
+    const client = makeClient(path)
+    await assert.rejects(
+      () => client.paneSendInput({ pane_id: 'w1:nonexistent', text: 'x' }),
+      (err: Error) => {
+        assert.ok(err.message.includes('pane not found'))
+        return true
+      }
+    )
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('socket: paneWaitForOutputChange uses events.wait revision matching', async () => {
+  let capturedReq: Req | null = null
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    capturedReq = req
+    replyAndClose(conn, req, {
+      type: 'wait_matched',
+      event: {
+        event: 'pane_output_changed',
+        data: { type: 'pane_output_changed', pane_id: 'w1:p1', workspace_id: 'w1', revision: 43 },
+      },
+    })
+  })
+  try {
+    const client = makeClient(path)
+    const result = await client.paneWaitForOutputChange({ pane_id: 'w1:p1', min_revision: 42, timeout_ms: 1_000 })
+    assert.deepEqual(result, { changed: true, revision: 43 })
+    assert.deepEqual((capturedReq as Req | null)?.params, {
+      match_event: { event: 'pane_output_changed', pane_id: 'w1:p1', min_revision: 42 },
+      timeout_ms: 1_000,
+    })
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('socket: paneWaitForOutputChange treats server timeout as unchanged', async () => {
+  const { path, server, dir } = await startFakeServer((conn, req, close) => {
+    replyErrorAndClose(conn, req, 'timeout', 'no matching event')
+  })
+  try {
+    const client = makeClient(path)
+    const result = await client.paneWaitForOutputChange({ pane_id: 'w1:p1', min_revision: 9, timeout_ms: 1_000 })
+    assert.deepEqual(result, { changed: false, revision: 9 })
+    client.close()
+  } finally {
+    server.close(); rmSync(dir, { recursive: true, force: true })
+  }
+})

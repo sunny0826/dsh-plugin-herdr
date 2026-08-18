@@ -32,6 +32,19 @@ export function getBoundPaneIds(): string[] {
 }
 
 /**
+ * 只读遍历全部已绑定 workspace_id（去重，无绑定返回空数组）。
+ * 供 HTTP 路由的 workspace 归属校验使用：目标 pane 的 workspace_id
+ * 必须在此集合中才允许输入写回（设计 §3.4）。
+ */
+export function getBoundWorkspaceIds(): string[] {
+  return [...new Set(
+    [...getBindingRegistry().values()]
+      .map(b => b.workspace_id)
+      .filter((id): id is string => id != null)
+  )]
+}
+
+/**
  * 命名规范（design: herdr-mode-gating MG-55）：
  * - 显示名（workspace/pane label）："dsh:<项目名>"（会话 cwd 的 basename；
  *   无 cwd 时回退 "dsh:<session id 后 8 位>"），多个会话共享同一项目名，
