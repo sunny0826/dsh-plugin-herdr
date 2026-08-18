@@ -14,6 +14,7 @@
  * dsh-client-ui-primitives 运行时注入——当前环境不可用，属明确遗留（M6/M7/M10-M12
  * 人工验收项保持开放，逻辑层以上述单测自动覆盖）。
  */
+import type { I18nKey } from './web/i18n.ts'
 import type { HerdrTopology } from './status.ts'
 
 // ---------------------------------------------------------------------------
@@ -43,6 +44,118 @@ export function dotState(status: string | undefined): string {
   if (status === 'working') return 'ongoing'
   if (status === 'blocked') return 'error'
   return 'done'
+}
+
+// ---------------------------------------------------------------------------
+// 五态展示模型（design: herdr-tab-redesign §4.3）。
+// 保留现有 dotState() 给 StateDot primitive（已验证兼容 ongoing/error/done）；
+// 新的共享展示模型供所有 UI 入口统一使用，避免各组件自行映射。
+// ---------------------------------------------------------------------------
+
+/** 协议状态 → 展示态（5 态；unknown 不再伪装 done）。 */
+export type PaneDisplayState = 'working' | 'blocked' | 'idle' | 'done' | 'unknown'
+
+/** 状态展示优先级（数值越小 = 越需要用户介入）。 */
+const STATUS_PRIORITY: Record<PaneDisplayState, number> = {
+  blocked: 0,
+  working: 1,
+  idle: 2,
+  done: 3,
+  unknown: 4,
+}
+
+/** 将任意协议状态归一化为展示态（缺失/空/未识别 → unknown）。 */
+export function paneDisplayState(status: string | undefined): PaneDisplayState {
+  switch (status) {
+    case 'working': return 'working'
+    case 'blocked': return 'blocked'
+    case 'idle': return 'idle'
+    case 'done': return 'done'
+    default: return 'unknown'
+  }
+}
+
+/** 展示态排序优先级（数值越小越优先）。 */
+export function statusSortPriority(state: PaneDisplayState): number {
+  return STATUS_PRIORITY[state]
+}
+
+/** 五态的无障碍文本 key（组件层通过 t() 获取双语文案）。 */
+export function ariaStateLabel(state: PaneDisplayState): Extract<I18nKey, `status.${PaneDisplayState}`> {
+  switch (state) {
+    case 'working': return 'status.working'
+    case 'blocked': return 'status.blocked'
+    case 'idle': return 'status.idle'
+    case 'done': return 'status.done'
+    case 'unknown': return 'status.unknown'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 键盘交互模型（design: herdr-tab-redesign §5.3）。
+// 把交互语义下沉为纯函数，组件只把结果接到 DOM，避免 UI 层复制键盘规则。
+// ---------------------------------------------------------------------------
+
+/** 键盘事件语义（纯数据，组件按此挂 handler）。 */
+export interface KeyboardAction {
+  /** 是否触发该动作。 */
+  readonly trigger: boolean
+  /** 是否需要 preventDefault（Enter/Space 默认触发按钮行为）。 */
+  readonly preventDefault: boolean
+}
+
+/** 元素激活语义：Enter 或 Space 触发。 */
+export function paneKeyboardHandlers(key: string): KeyboardAction {
+  if (key === 'Enter' || key === ' ') return { trigger: true, preventDefault: true }
+  return { trigger: false, preventDefault: false }
+}
+
+// ---------------------------------------------------------------------------
+// 确认对话框焦点模型（design: herdr-tab-redesign §5.3）。
+// ---------------------------------------------------------------------------
+
+/** 对话框焦点模型描述（组件据此管理 DOM 焦点与关联触发器状态）。 */
+export interface DialogFocusModel {
+  /** 打开后焦点应进入的元素（'cancel' = 取消按钮 / 'confirm' = 确认按钮）。 */
+  readonly initialFocus: 'cancel' | 'confirm'
+  /** Escape 键是否取消对话框。 */
+  readonly escapeCancels: boolean
+  /** 标题关联 ID（aria-labelledby）。 */
+  readonly titleId: string
+  /** 对话框关闭后是否恢复关联触发控件焦点。 */
+  readonly restoreFocus: true
+  /** 焦点恢复目标。 */
+  readonly restoreTarget: 'trigger'
+}
+
+/** 根据对话框属性派生焦点模型。 */
+export function dialogFocusModel(opts: { busy?: boolean; titleId: string }): DialogFocusModel {
+  return {
+    // 处理中时焦点锁定在确认按钮（阻止误操作）；否则默认焦点在取消 button（安全操作优先）
+    initialFocus: opts.busy ? 'confirm' : 'cancel',
+    escapeCancels: !opts.busy,
+    titleId: opts.titleId,
+    restoreFocus: true,
+    restoreTarget: 'trigger',
+  }
+}
+
+export interface DisclosureState {
+  readonly expanded: boolean
+  readonly ariaExpanded: boolean
+  readonly controlsId: string
+}
+
+export function disclosureState(expanded: boolean, controlsId: string): DisclosureState {
+  return { expanded, ariaExpanded: expanded, controlsId }
+}
+
+export interface FocusableTarget {
+  focus(): void
+}
+
+export function focusBeforeRemoval(target: FocusableTarget | null): void {
+  target?.focus()
 }
 
 /** topology → 按 workspace 分组的 pane 列表（Herdr 视图与右侧面板共用）。 */
@@ -374,6 +487,126 @@ export function agentTheme(agentName: string | undefined): AgentAccent {
 }
 
 // ---------------------------------------------------------------------------
+// ANSI SGR 解析器（design: pane-log-terminal-design §3）。
+// 委托到 src/terminal-ansi.ts 独立模块（纯函数，不依赖 React/DOM）。
+// ---------------------------------------------------------------------------
+export type { AnsiColor, AnsiColorKind, AnsiStyle, AnsiToken, AnsiLine } from './terminal-ansi.ts'
+export type { TerminalScreen, TerminalCell, TerminalCursor } from './terminal-ansi.ts'
+export { parseAnsiOutput, ansiPlainText, stripAnsi, compactAnsiLines, truncateAnsiTail, replayTerminalSnapshot } from './terminal-ansi.ts'
+
+// ---------------------------------------------------------------------------
+// 交互式终端输入映射与滚动状态（design: pane-interactive-terminal §3.3/§3.5）
+// 纯函数，node:test 可直接覆盖。
+// ---------------------------------------------------------------------------
+
+/** 键盘映射结果：text 分支发送原始字符，keys 分支发送协议键名，unsupported 显示提示。 */
+export type TerminalKeyResult =
+  | { kind: 'text'; text: string }
+  | { kind: 'keys'; keys: string[] }
+  | { kind: 'unsupported' }
+
+/** 已证实可用的 send_keys 词汇（来源：pane-send-keys.ts 工具描述 + 集成实测）。 */
+const CONFIRMED_KEYS = new Set([
+  'enter', 'esc', 'tab', 'ctrl+c', 'alt+x', 'shift+tab', 'f1',
+])
+
+/**
+ * 键盘事件 → terminal input mapping。
+ * - 可打印字符 → text 分支
+ * - Enter → text: '\r'
+ * - Backspace → text: '\x7f'（DEL；部分终端用 \x08 BS）
+ * - Delete → text: '\x1b[3~'
+ * - 箭头 → text: '\x1b[A/B/C/D'
+ * - Home/End → text: '\x1b[H/F'
+ * - PageUp/PageDown → text: '\x1b[5~/6~'
+ * - 已证实 keys 词汇 → keys 分支
+ * - 其余 → unsupported
+ */
+export function mapTerminalKey(event: {
+  key: string
+  code: string
+  ctrlKey: boolean
+  altKey: boolean
+  metaKey: boolean
+  shiftKey: boolean
+}): TerminalKeyResult {
+  const { key, ctrlKey, altKey, metaKey } = event
+
+  // Ctrl/Alt/Meta chord：只发送已证实的词汇
+  if (ctrlKey || altKey || metaKey) {
+    const chord = `${ctrlKey ? 'ctrl+' : ''}${altKey ? 'alt+' : ''}${metaKey ? 'meta+' : ''}${key.toLowerCase()}`
+    if (CONFIRMED_KEYS.has(chord)) return { kind: 'keys', keys: [chord] }
+    return { kind: 'unsupported' }
+  }
+
+  // 特殊键 → 原始控制字节回退
+  switch (key) {
+    case 'Enter': return { kind: 'text', text: '\r' }
+    case 'Backspace': return { kind: 'text', text: '\x7f' }
+    case 'Delete': return { kind: 'text', text: '\x1b[3~' }
+    case 'ArrowUp': return { kind: 'text', text: '\x1b[A' }
+    case 'ArrowDown': return { kind: 'text', text: '\x1b[B' }
+    case 'ArrowRight': return { kind: 'text', text: '\x1b[C' }
+    case 'ArrowLeft': return { kind: 'text', text: '\x1b[D' }
+    case 'Home': return { kind: 'text', text: '\x1b[H' }
+    case 'End': return { kind: 'text', text: '\x1b[F' }
+    case 'PageUp': return { kind: 'text', text: '\x1b[5~' }
+    case 'PageDown': return { kind: 'text', text: '\x1b[6~' }
+    case 'Tab': return { kind: 'text', text: '\t' }
+    case 'Escape': return { kind: 'text', text: '\x1b' }
+  }
+
+  // 已证实的 keys 词汇（不通过 chord 匹配的独立键名）
+  if (CONFIRMED_KEYS.has(key.toLowerCase())) {
+    return { kind: 'keys', keys: [key.toLowerCase()] }
+  }
+
+  // 可打印字符（单字符、非控制字符）
+  if (key.length === 1 && key >= ' ') {
+    return { kind: 'text', text: key }
+  }
+
+  return { kind: 'unsupported' }
+}
+
+/** 终端滚动跟随状态。 */
+export interface TerminalScrollState {
+  atBottom: boolean
+  pendingOutput: boolean
+}
+
+/** 滚动状态转移：用户滚动更新 atBottom；新输出到达时若 atBottom 则跟随，否则标记 pending。 */
+export function terminalScrollTransition(
+  prev: TerminalScrollState,
+  newOutput: boolean,
+  scrolledToBottom: boolean,
+): TerminalScrollState {
+  if (scrolledToBottom) return { atBottom: true, pendingOutput: false }
+  // 用户滚动到非底部 → atBottom=false
+  if (!newOutput) return { atBottom: false, pendingOutput: prev.pendingOutput }
+  // 新输出到达且不在底部 → 标记 pending
+  return { atBottom: false, pendingOutput: true }
+}
+
+/** 最大化焦点转移：进入最大化时返回焦点目标描述，退出时恢复。 */
+export interface TerminalFocusTransition {
+  /** 进入最大化后焦点应移到何处。 */
+  enterTarget: 'input'
+  /** 退出最大化后焦点应恢复到何处（trigger element id）。 */
+  restoreTarget: string | null
+}
+
+export function terminalFocusTransition(
+  maximized: boolean,
+  triggerId: string | null,
+): TerminalFocusTransition {
+  return {
+    enterTarget: 'input',
+    restoreTarget: maximized ? null : triggerId,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Herdr 模式判定与面板会话聚焦（design: herdr-mode-gating）。
 // deriveHerdrMode：当前会话是否 herdr 模式（agentPreset 权威信号）；
 // filterGroupsToSession：面板只保留包含本会话绑定 pane 的 workspace 组。
@@ -535,6 +768,37 @@ export function normalizeAgentKind(kind: string | null | undefined, agent: strin
   if (kind && kind.trim() !== '') return kind
   if (agent && agent.trim() !== '') return agent
   return 'unknown'
+}
+
+const DASHBOARD_KINDS = ['codex', 'pi', 'opencode', 'claude', 'dsh'] as const
+
+export type DashboardKind = typeof DASHBOARD_KINDS[number] | 'unknown'
+
+function isDashboardKind(value: string): value is DashboardKind {
+  switch (value) {
+    case 'codex':
+    case 'pi':
+    case 'opencode':
+    case 'claude':
+    case 'dsh':
+      return true
+    default:
+      return false
+  }
+}
+
+export function normalizeDashboardKind(kind: string | null | undefined): DashboardKind {
+  const normalized = kind?.trim().toLowerCase() ?? ''
+  return isDashboardKind(normalized) ? normalized : 'unknown'
+}
+
+export function normalizeDashboardKindCounts(kinds: ReadonlyArray<{ kind: string; value: number }>): Array<{ kind: DashboardKind; value: number }> {
+  const counts = new Map<DashboardKind, number>()
+  for (const entry of kinds) {
+    const kind = normalizeDashboardKind(entry.kind)
+    counts.set(kind, (counts.get(kind) ?? 0) + entry.value)
+  }
+  return [...counts].map(([kind, value]) => ({ kind, value }))
 }
 
 /**

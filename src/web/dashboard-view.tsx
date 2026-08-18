@@ -24,7 +24,7 @@ export function DashboardContent({ onPaneClick, onNotice }: {
       {error ? <div className="herdr-server-error">{t('dashboard.fetchError')}: {error}</div> : null}
       {snap ? (
         <>
-          <DashboardSummary snap={snap} />
+          {/* 数据新鲜度条（P2-4：前移到摘要卡之前，与可信度信息相邻） */}
           <div className="herdr-dash-fresh">
             {snap.stale ? <span className="herdr-dash-stale-badge">{t('dashboard.stale')}</span> : null}
             <span>
@@ -39,6 +39,7 @@ export function DashboardContent({ onPaneClick, onNotice }: {
               <Button variant="outline" size="sm" onClick={refresh}>{t('dashboard.refresh')}</Button>
             </span>
           </div>
+          <DashboardSummary snap={snap} />
           <DashboardWorkspaces snap={snap} onPaneClick={onPaneClick} onNotice={onNotice} />
         </>
       ) : (

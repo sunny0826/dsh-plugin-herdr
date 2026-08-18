@@ -123,3 +123,74 @@ export function useHerdrStart(): { starting: boolean; startError: string | null;
   }
   return { starting, startError, start }
 }
+
+// ---------------------------------------------------------------------------
+// 终端输入写回（design: pane-interactive-terminal §3.4）
+// ---------------------------------------------------------------------------
+
+/** 单 pane 的输入队列：FIFO + promise chain 保证顺序。 */
+const inputQueues = new Map<string, Promise<void>>()
+
+/** 发送终端输入到指定 pane（HTTP → /herdr-pane-input → pane.send_input）。 */
+export function sendPaneInput(paneId: string, input: { text?: string; keys?: string[] }): Promise<void> {
+  const prev = inputQueues.get(paneId) ?? Promise.resolve()
+  const next = prev.then(async () => {
+    const resp = await fetch('/herdr-pane-input', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pane_id: paneId, ...input }),
+    })
+    const body = await resp.json() as { ok?: boolean; error?: string }
+    if (!body.ok) throw new Error(body.error ?? `herdr-pane-input HTTP ${resp.status}`)
+  })
+  inputQueues.set(paneId, next.catch(() => {})) // 队列不因单次失败断裂
+  return next
+}
+
+// ---------------------------------------------------------------------------
+// 终端 bootstrap/snapshot（B 模式：revision 快照重拉）
+// ---------------------------------------------------------------------------
+
+export interface TerminalBootstrapResult {
+  text: string
+  revision?: number
+  truncated: boolean
+}
+
+/** 获取 pane 的终端快照（B 模式：revision 变化时重新读取全量 snapshot）。 */
+export async function fetchTerminalBootstrap(
+  paneId: string,
+  maxLines?: number,
+  signal?: AbortSignal,
+): Promise<TerminalBootstrapResult> {
+  const url = new URL('/herdr-pane-terminal-bootstrap', window.location.origin)
+  url.searchParams.set('pane_id', paneId)
+  if (maxLines !== undefined) url.searchParams.set('lines', String(maxLines))
+  const resp = await fetch(url.toString(), { signal })
+  const body = await resp.json() as { ok?: boolean; text?: string; revision?: number; truncated?: boolean; error?: string }
+  if (!body.ok) throw new Error(body.error ?? `terminal-bootstrap HTTP ${resp.status}`)
+  return { text: body.text ?? '', revision: body.revision, truncated: body.truncated === true }
+}
+
+export interface TerminalChangeResult {
+  changed: boolean
+  revision: number
+}
+
+/** 等待 pane revision 变化；服务端由 events.wait 驱动，超时表示当前无新输出。 */
+export async function waitForTerminalChange(
+  paneId: string,
+  afterRevision: number,
+  signal?: AbortSignal,
+): Promise<TerminalChangeResult> {
+  const url = new URL('/herdr-pane-terminal-wait', window.location.origin)
+  url.searchParams.set('pane_id', paneId)
+  url.searchParams.set('after_revision', String(afterRevision))
+  const resp = await fetch(url.toString(), { signal })
+  const body = await resp.json() as { ok?: boolean; changed?: boolean; revision?: number; error?: string }
+  if (!body.ok) throw new Error(body.error ?? `terminal-wait HTTP ${resp.status}`)
+  return {
+    changed: body.changed === true,
+    revision: typeof body.revision === 'number' ? body.revision : afterRevision,
+  }
+}

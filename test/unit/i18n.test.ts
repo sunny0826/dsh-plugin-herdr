@@ -38,7 +38,7 @@ test('unknown language falls back to zh', () => {
 
 test('t() substitutes {param} placeholders', () => {
   setHerdrLang('zh')
-  assert.equal(t('pane.closeConfirm', { id: 'w1:p3' }), '关闭 pane w1:p3？其内进程将终止')
+  assert.equal(t('pane.closeConfirm', { id: 'w1:p3' }), '关闭窗格 w1:p3？其内进程将终止')
   setHerdrLang('en')
   assert.equal(t('pane.closeConfirm', { id: 'w1:p3' }), 'Close pane w1:p3? Its process will be terminated')
   assert.equal(t('view.closeWorkspaceConfirm', { id: 'ws1', count: 2 }), 'Close workspace ws1 and its 2 panes?')
@@ -52,31 +52,84 @@ test('t() leaves unknown placeholders untouched and accepts numeric params', () 
 })
 
 test('t() with an unknown key returns the key itself', () => {
-  // Cast: callers use typed I18nKey; this guards the runtime fallback.
   const unknown = t('no.such.key' as never)
   assert.equal(unknown, 'no.such.key')
 })
 
-test('setHerdrLang notifies listeners and skips no-op updates', () => {
-  let calls = 0
-  const listener = () => { calls += 1 }
-  setHerdrLang('zh')
+test('setHerdrLang skips no-op updates and switches language', () => {
   setHerdrLang('zh')
   setHerdrLang('zh')
   assert.equal(getHerdrLang(), 'zh')
   setHerdrLang('en')
   assert.equal(getHerdrLang(), 'en')
+  setHerdrLang('zh')
+})
+
+test('status keys: 5-state display labels are bilingual and localized', () => {
+  setHerdrLang('zh')
+  assert.equal(t('status.working'), '工作中')
+  assert.equal(t('status.blocked'), '等待处理')
+  assert.equal(t('status.idle'), '空闲')
+  assert.equal(t('status.done'), '已完成')
+  assert.equal(t('status.unknown'), '未知')
+  setHerdrLang('en')
+  assert.equal(t('status.working'), 'Working')
+  assert.equal(t('status.blocked'), 'Blocked')
+  assert.equal(t('status.idle'), 'Idle')
+  assert.equal(t('status.done'), 'Done')
+  assert.equal(t('status.unknown'), 'Unknown')
+  setHerdrLang('zh')
+})
+
+test('new keys: status, tab, list, and error summaries are bilingual', () => {
+  setHerdrLang('zh')
+  assert.equal(t('view.statusSummary'), '窗格状态摘要')
+  assert.equal(t('view.statusError', { error: '离线' }), 'herdr 状态：离线')
+  assert.equal(t('view.tabId', { id: 't1' }), '标签页 t1')
+  assert.equal(t('view.listMeta', { workspaces: 1, panes: 3 }), '1 个工作区 · 3 个窗格')
+  setHerdrLang('en')
+  assert.equal(t('view.statusSummary'), 'Pane status summary')
+  assert.equal(t('view.statusError', { error: 'offline' }), 'herdr status: offline')
+  assert.equal(t('view.tabId', { id: 't1' }), 'tab t1')
+  assert.equal(t('view.listMeta', { workspaces: 1, panes: 3 }), '1 workspaces · 3 panes')
+  setHerdrLang('zh')
+})
+
+test('view.stats: Chinese and English summaries stay distinct', () => {
+  setHerdrLang('zh')
+  assert.equal(t('view.stats', { ws: 2, panes: 5, agents: 3 }), '2 个工作区 · 5 个窗格 · 3 个代理')
+  setHerdrLang('en')
+  assert.equal(t('view.stats', { ws: 2, panes: 5, agents: 3 }), '2 workspaces · 5 panes · 3 agents')
+  setHerdrLang('zh')
 })
 
 test('dashboard keys: bilingual sanity + template params', () => {
   setHerdrLang('zh')
   assert.equal(t('global.title'), 'Herdr 仪表盘')
   assert.equal(t('dashboard.lastUpdated', { time: '12:00:00' }), '最近更新：12:00:00')
+  assert.equal(t('dashboard.unavailable'), '不可用')
+  assert.equal(t('dashboard.lastUpdated', { time: '12:00:00' }), '最近更新：12:00:00')
   setHerdrLang('en')
   assert.equal(t('global.title'), 'Herdr Dashboard')
   assert.equal(t('dashboard.unavailable'), 'Unavailable')
   assert.equal(t('dashboard.lastUpdated', { time: '12:00:00' }), 'Last updated: 12:00:00')
-  assert.equal(t('dashboard.versionProtocol'), 'Version · Protocol')
+  assert.equal(t('dashboard.versionProtocol'), 'Version · protocol')
   assert.equal(t('dashboard.sampledHint', { time: '14:32:05' }), 'sampled at 14:32:05')
+  setHerdrLang('zh')
+})
+
+test('pane.terminalOutput: bilingual aria label for log container', () => {
+  setHerdrLang('zh')
+  assert.equal(t('pane.terminalOutput'), '终端输出')
+  setHerdrLang('en')
+  assert.equal(t('pane.terminalOutput'), 'Terminal output')
+  setHerdrLang('zh')
+})
+
+test('pane.outputTruncated: bilingual truncation indicator', () => {
+  setHerdrLang('zh')
+  assert.equal(t('pane.outputTruncated'), '输出已截断')
+  setHerdrLang('en')
+  assert.equal(t('pane.outputTruncated'), 'Output truncated')
   setHerdrLang('zh')
 })

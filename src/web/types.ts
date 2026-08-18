@@ -8,6 +8,8 @@ export interface HerdrAgentStatus {
   status: string
   message?: string
   output: string
+  /** 输出是否被截断（服务器 truncated 或客户端 OUTPUT_CAP/transport cap）。 */
+  outputTruncated?: boolean
   updated_at: number
 }
 
