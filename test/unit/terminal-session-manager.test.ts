@@ -20,8 +20,12 @@ class FakeChild extends EventEmitter {
     writable: true,
     written: [] as string[],
     ended: false,
-    write(s: string): boolean { this.written.push(s); return true },
-    end(): void { this.ended = true },
+    // 箭头函数使 this 指向 FakeChild 实例（对象字面量方法中的 this 是 stdin 自身）
+    write: (s: string): boolean => { this.stdin.written.push(s); return true },
+    // 模拟真实 CLI：收到 release 且 stdin 关闭（EOF）后进程退出。
+    // 异步触发 exit，让 reap 的 once('exit')（在 end() 之后注册）能捕获，
+    // 从而 release 的 promise 经 exit 事件 resolve，而非依赖 unref'd 兜底定时器。
+    end: (): void => { this.stdin.ended = true; setImmediate(() => this.exit(0)) },
   }
   exitCode: number | null = null
   // 模拟真实 kill→exit：重建时 waitChildExit 依赖 exit 事件才能推进

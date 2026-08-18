@@ -510,11 +510,14 @@ export class TerminalSessionManager {
       }
       if (opts.sendRelease && child.stdin?.writable && child.exitCode === null) {
         try {
-          child.stdin.write('{"type":"terminal.release"}\n')
-          child.stdin.end()
+          // 先注册 exit 监听再写 release + EOF：真实 CLI 收到 release 且 stdin 关闭后即退出，
+          // 退出路径必须能捕获（含同步退出），避免只能依赖下面的 unref'd 兜底定时器
+          // （unref 定时器在事件循环耗尽时不保证点火，Node 22 测试运行器会报 pending promise）。
           const timer = setTimeout(cleanup, 1000)
           timer.unref?.()
           child.once('exit', () => { clearTimeout(timer); cleanup() })
+          child.stdin.write('{"type":"terminal.release"}\n')
+          child.stdin.end()
           return
         } catch { /* 写入失败 → 走普通回收 */ }
       }

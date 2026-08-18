@@ -17,9 +17,17 @@ class FakeStream extends EventEmitter {
 class FakeChild extends EventEmitter {
   stdout = new FakeStream()
   stderr = new FakeStream()
-  stdin = { writable: true, written: [] as string[], write(s: string) { this.written.push(s); return true }, end() {} }
+  stdin = {
+    writable: true,
+    written: [] as string[],
+    // 箭头函数使 this 指向 FakeChild 实例
+    write: (s: string) => { this.stdin.written.push(s); return true },
+    // 模拟真实 CLI：stdin EOF 后退出，避免 dispose/release 依赖 unref'd 兜底定时器
+    end: () => { setImmediate(() => this.exit(0)) },
+  }
   exitCode: number | null = null
   kill(): void {}
+  exit(code: number): void { this.exitCode = code; this.emit('exit', code) }
   emitFrame(f: { seq: number; full?: boolean; bytes?: string }): void {
     this.stdout.emit('data', Buffer.from(JSON.stringify({
       type: 'terminal.frame', seq: f.seq, full: f.full ?? false,
