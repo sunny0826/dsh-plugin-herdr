@@ -576,6 +576,30 @@ test('/herdr-pane-terminal-bootstrap: returns snapshot with revision', async () 
   } finally { await dispose() }
 })
 
+test('/herdr-pane-terminal-bootstrap: source=recent_unwrapped 请求历史快照', async () => {
+  const fakeHerdr = makeFakeHerdr()
+  let readRequest: Record<string, unknown> | null = null
+  fakeHerdr.paneRead = async (req: Record<string, unknown>) => {
+    readRequest = req
+    return { text: 'line1\nline2', truncated: true, revision: 7 }
+  }
+  const { routes, dispose } = await loadPlugin({ fakeHerdr })
+  try {
+    const route = routes.find(r => r.path === '/herdr-pane-terminal-bootstrap')!
+    const { status, body } = await invoke(route.handler, {
+      method: 'GET', headers: LOCAL,
+      url: '/herdr-pane-terminal-bootstrap?pane_id=w1:p1&source=recent_unwrapped&lines=300',
+    })
+    assert.equal(status, 200)
+    assert.equal(body?.ok, true)
+    assert.equal(body?.text, 'line1\nline2')
+    assert.equal(body?.revision, 7)
+    assert.equal(body?.truncated, true)
+    assert.equal((readRequest as Record<string, unknown> | null)?.source, 'recent_unwrapped')
+    assert.equal((readRequest as Record<string, unknown> | null)?.lines, 300)
+  } finally { await dispose() }
+})
+
 // ------------------------------------------------------------------
 // GET /herdr-pane-terminal-wait（events.wait + revision）
 // ------------------------------------------------------------------

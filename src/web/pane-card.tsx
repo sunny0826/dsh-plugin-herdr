@@ -10,6 +10,7 @@ import {
   agentTheme,
   ariaStateLabel,
   dotState,
+  paneDisplayName,
   paneDisplayState,
   validateLabel,
   focusBeforeRemoval,
@@ -18,11 +19,6 @@ import { t, useHerdrLang } from './i18n.ts'
 import type { HerdrAgentStatus, HerdrPaneView } from './types.ts'
 import { PaneTerminal } from './pane-terminal.tsx'
 import { ConfirmDialog } from './confirm-dialog.tsx'
-
-/** 显示名：label（用户改名）> title（含 terminal_title 合并）> pane_id。 */
-export function displayName(pane: HerdrPaneView): string {
-  return pane.label ?? pane.title ?? pane.pane_id
-}
 
 /** 拖拽相关 props（由 HerdrView 注入）。 */
 export interface PaneCardDragProps {
@@ -79,14 +75,14 @@ export function PaneCard({
   const beginRename = useCallback(() => {
     if (renameBusy) return
     committedRef.current = false
-    setDraft(displayName(pane))
+    setDraft(paneDisplayName(pane, agent))
     setRenameError(null)
     setRenaming(true)
     requestAnimationFrame(() => {
       const el = inputRef.current
       if (el) { el.focus(); el.select() }
     })
-  }, [pane, renameBusy])
+  }, [pane, agent, renameBusy])
 
   const commitRename = useCallback(async () => {
     if (committedRef.current) return
@@ -94,13 +90,13 @@ export function PaneCard({
     if (!onRename) { setRenaming(false); return }
     let label: string | null
     try { label = validateLabel(draft) } catch (e) { setRenameError(e instanceof Error ? e.message : String(e)); return }
-    if (label === displayName(pane) && label !== null) { setRenaming(false); return }
+    if (label === paneDisplayName(pane, agent) && label !== null) { setRenaming(false); return }
     committedRef.current = true
     setRenameBusy(true)
     setRenameError(null)
     setRenaming(false)
     try { await onRename(label) } catch (e) { setRenameError(e instanceof Error ? e.message : String(e)) } finally { setRenameBusy(false) }
-  }, [draft, renameBusy, onRename, pane])
+  }, [draft, renameBusy, onRename, pane, agent])
 
   const doClose = useCallback(() => {
     if (closeBusy || !onClose) return
@@ -150,7 +146,7 @@ export function PaneCard({
           />
         ) : (
           <span className="herdr-pcard-name" title={pane.pane_id} onDoubleClick={beginRename}>
-            {displayName(pane)}
+            {paneDisplayName(pane, agent)}
           </span>
         )}
         {self ? <span className="herdr-pcard-self-tag">{t('panel.selfTag')}</span> : null}

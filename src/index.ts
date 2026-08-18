@@ -513,11 +513,12 @@ export function apply(ctx: Context, config: ConfigType) {
         }
         const lines = parseInt(url.searchParams.get('lines') ?? '500', 10)
         const maxLines = Math.min(Math.max(lines, 100), 50000)
+        const source = url.searchParams.get('source') === 'recent_unwrapped' ? 'recent_unwrapped' as const : 'visible' as const
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         try {
           const result = await ctx.herdr.paneRead({
             pane_id: paneId,
-            source: 'visible',
+            source,
             lines: maxLines,
             format: 'ansi',
           })

@@ -15,7 +15,7 @@
  * 人工验收项保持开放，逻辑层以上述单测自动覆盖）。
  */
 import type { I18nKey } from './web/i18n.ts'
-import type { HerdrTopology } from './status.ts'
+import type { HerdrAgentStatus, HerdrPaneView, HerdrTopology } from './status.ts'
 
 // ---------------------------------------------------------------------------
 // 排序 / 分组 / 状态派生（纯函数）
@@ -29,6 +29,27 @@ export function comparePaneId(a: string, b: string): number {
   const na = Number((pa ?? '').replace(/\D/g, '')) || 0
   const nb = Number((pb ?? '').replace(/\D/g, '')) || 0
   return na - nb
+}
+
+/** pane 显示名回退链：label > title（terminal_title 合并）> terminal_title_stripped > display_agent > agent 名 > pane_id。 */
+export function paneDisplayName(pane: HerdrPaneView, agent?: HerdrAgentStatus | undefined): string {
+  return (
+    pane.label
+    ?? pane.title
+    ?? pane.terminal_title_stripped
+    ?? pane.display_agent
+    ?? agent?.name
+    ?? agent?.agent
+    ?? pane.pane_id
+  )
+}
+
+/** pane 是否归属插件自身（agent 为 dsh 或 label 以 dsh: 开头）——面板列表/看板中作为基础设施 pane 处理。 */
+export function isDshPane(pane: HerdrPaneView, agent?: HerdrAgentStatus | undefined): boolean {
+  const agentName = agent?.agent ?? ''
+  if (agentName === 'dsh' || agentName.startsWith('dsh')) return true
+  const label = pane.label ?? ''
+  return label.startsWith('dsh:')
 }
 
 /** workspace_id 自然排序（w2 < w10）。 */
@@ -492,7 +513,7 @@ export function agentTheme(agentName: string | undefined): AgentAccent {
 // ---------------------------------------------------------------------------
 export type { AnsiColor, AnsiColorKind, AnsiStyle, AnsiToken, AnsiLine } from './terminal-ansi.ts'
 export type { TerminalScreen, TerminalCell, TerminalCursor } from './terminal-ansi.ts'
-export { parseAnsiOutput, ansiPlainText, stripAnsi, compactAnsiLines, truncateAnsiTail, replayTerminalSnapshot } from './terminal-ansi.ts'
+export { parseAnsiOutput, ansiPlainText, stripAnsi, compactAnsiLines, trimAnsiSnapshotPadding, truncateAnsiTail, replayTerminalSnapshot } from './terminal-ansi.ts'
 
 // ---------------------------------------------------------------------------
 // 交互式终端输入映射与滚动状态（design: pane-interactive-terminal §3.3/§3.5）

@@ -3,7 +3,7 @@
 
 import { HerdrView, HerdrHeaderPill } from './herdr-view.tsx'
 import { setSessionIdReader } from './navigation.ts'
-import { HerdrPaneList, HerdrHeroStatus } from './pane-list.tsx'
+import { HerdrPaneList } from './pane-list.tsx'
 import { startModeTracking, type SessionListLike } from './mode.ts'
 import { startTabController } from './tab-controller.ts'
 import { startHeroBranding, setHerdrLang } from './hero-branding.ts'
@@ -93,17 +93,6 @@ export function apply(ctx: ClientCtx) {
         order: 30,
       },
       HerdrHeaderPill,
-    ),
-  )
-  // 新建会话（hero）看板浮层
-  ctx.slots.inject('shell.overlay', () =>
-    ctx.slots.register(
-      {
-        name: 'shell.overlay',
-        id: 'herdr-server',
-        order: 30,
-      },
-      HerdrHeroStatus,
     ),
   )
   // 会话页右侧 pane 状态列表面板（可拖动吸附；折叠为 logo；任务开始自动展开）

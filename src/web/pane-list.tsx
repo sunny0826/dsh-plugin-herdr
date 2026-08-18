@@ -6,6 +6,7 @@ import {
   ariaStateLabel,
   dotState,
   filterGroupsToSession,
+  paneDisplayName,
   paneDisplayState,
   paneKeyboardHandlers,
   shouldAutoExpand,
@@ -17,7 +18,6 @@ import { HERDR_LOGO_PATH_D } from './logo-path.ts'
 import { useHerdrMode } from './mode.ts'
 import { focusPaneInHerdrTab, getSessionId } from './navigation.ts'
 import { fetchSelfPaneId } from './session-pane.ts'
-import { HerdrServerBanner } from './server-banner.tsx'
 import { useHerdrStatus, useGlobalDashboardOpen } from './store.ts'
 import type { HerdrAgentStatus } from './types.ts'
 
@@ -279,7 +279,8 @@ export function HerdrPaneList() {
                 const isSelf = pane.pane_id === selfPaneId
                 const muted = displayState === 'unknown'
                 const stateLabel = t(ariaStateLabel(displayState))
-                const rowLabel = isSelf ? t('panel.selfTitle', { id: pane.pane_id }) : t('panel.paneTitle', { id: pane.pane_id })
+                const displayName = paneDisplayName(pane, agent)
+                const rowLabel = isSelf ? t('panel.selfTitle', { id: displayName }) : t('panel.paneTitle', { id: displayName })
                 return (
                   <div
                     key={pane.pane_id}
@@ -300,7 +301,7 @@ export function HerdrPaneList() {
                     }}
                   >
                     <StateDot state={dotState(status)} className={muted ? 'herdr-dot-muted' : undefined} />
-                    <span className="pl-paneid">{pane.pane_id}</span>
+                    <span className="pl-paneid" title={pane.pane_id}>{paneDisplayName(pane, agent)}</span>
                     <span className="pl-agent">{agent?.agent ?? '—'}</span>
                     {isSelf ? <span className="pl-self-tag">{t('panel.selfTag')}</span> : null}
                     <span className="pl-state" data-state={displayState} aria-label={stateLabel}>
@@ -317,23 +318,3 @@ export function HerdrPaneList() {
   )
 }
 
-// 新建会话（hero 相位）浮层看板：shell.overlay 槽位注册
-export function HerdrHeroStatus() {
-  const { snap, error, refresh } = useHerdrStatus()
-  const [hero, setHero] = useState(false)
-
-  // hero 相位检测：conversation root 的 data-phase 属性（无活动会话时 = "hero"）
-  useEffect(() => {
-    const check = () => setHero(Boolean(document.querySelector('[data-phase="hero"]')))
-    check()
-    const timer = setInterval(check, 1000)
-    return () => clearInterval(timer)
-  }, [])
-
-  if (!hero) return null
-  return (
-    <div className="herdr-hero-card">
-      <HerdrServerBanner snap={snap} error={error} onStarted={refresh} />
-    </div>
-  )
-}

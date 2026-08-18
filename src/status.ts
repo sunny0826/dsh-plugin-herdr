@@ -53,6 +53,8 @@ export interface HerdrPaneView {
   workspace_id: string
   tab_id?: string
   title?: string
+  terminal_title_stripped?: string
+  display_agent?: string
   label?: string
   cwd?: string
   foreground_cwd?: string
@@ -510,12 +512,14 @@ export class HerdrStatusTracker {
         })),
         panes: snap.panes.map(p => {
           // label 来自 snapshot PaneInfo.label（rename 后即时，T01 实测）
-          const src = p as { pane_id?: string; workspace_id?: string; tab_id?: string; title?: string; terminal_title?: string; label?: string; cwd?: string; foreground_cwd?: string; focused?: boolean; agent_status?: string }
+          const src = p as { pane_id?: string; workspace_id?: string; tab_id?: string; title?: string; terminal_title?: string; terminal_title_stripped?: string; display_agent?: string; label?: string; cwd?: string; foreground_cwd?: string; focused?: boolean; agent_status?: string }
           return {
             pane_id: src.pane_id ?? '',
             workspace_id: src.workspace_id ?? '',
             tab_id: src.tab_id,
             title: src.title ?? src.terminal_title,
+            terminal_title_stripped: src.terminal_title_stripped,
+            display_agent: src.display_agent,
             label: src.label,
             cwd: src.cwd,
             foreground_cwd: src.foreground_cwd,
