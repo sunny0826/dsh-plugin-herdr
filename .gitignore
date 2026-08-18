@@ -20,3 +20,6 @@ scratch-plugin/
 docs/
 DESIGN.md
 TASKS.md
+
+.playwright-mcp
+.playwright-cli

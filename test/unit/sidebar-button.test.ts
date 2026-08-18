@@ -41,10 +41,10 @@ test('surface contract: full-height opaque work-area page with its own scroll', 
   assert.doesNotMatch(stylesSource, /\.herdr-gds\s*\{[^}]*left: 0/, 'surface 左边界由测量内联（不硬编码 0）')
 })
 
-test('v4 contracts: treemap kind colors, state dots and agent list styles exist (tokens only)', () => {
-  // 颜色映射用 DSH token（data-kind 选择器），无硬编码色值。
-  assert.match(stylesSource, /\.herdr-tm-block\[data-kind='codex'\]\s*\{[^}]*var\(--dsw-alias-state-business-primary\)/, 'codex 块 business token')
-  assert.match(stylesSource, /\.herdr-tm-block\[data-kind='unknown'\]/, 'unknown 块中性色')
+test('v4 contracts: stacked bar colors, done=tertiary split, state dots and agent list styles exist (tokens only)', () => {
+  // 颜色映射用 DSH token（data-state 选择器），无硬编码色值。
+  assert.match(stylesSource, /\.herdr-dash-bar-seg\[data-state='working'\]\s*\{[^}]*var\(--dsw-alias-state-business-primary\)/, 'working 段 business token')
+  assert.match(stylesSource, /\.herdr-dash-bar-seg\[data-state='done'\]\s*\{[^}]*var\(--dsw-alias-label-tertiary\)/, 'done 段中性灰（与 idle 绿区分）')
   assert.match(stylesSource, /\.herdr-sb-marker-dot\[data-state='running'\]/, 'marker 运行状态点')
   assert.match(stylesSource, /\.herdr-sb-marker-dot\[data-state='not-installed'\]/, 'marker 未安装状态点')
   assert.match(stylesSource, /\.herdr-dash-agent-list/, 'agent 名称列表样式')

@@ -12,6 +12,7 @@ import {
   deriveMarkerPressed,
   deriveMarkerServerState,
   derivePaneNavState,
+  formatTime,
   isSidebarRail,
   NEW_SESSION_SELECTORS,
   REGION_AREA_SELECTOR,
@@ -290,8 +291,23 @@ export function GlobalDashboardSurface() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close()
     }
+    // 点击左侧 sidebar 会话树（treeitem）或新建会话按钮 → 关闭 surface
+    // （capture 先于 surface 内部分发；surface 内部点击不受影响）
+    const onClick = (e: MouseEvent) => {
+      const el = e.target as Element | null
+      if (!el) return
+      if (el.closest('.herdr-gds')) return
+      const isSidebarNav =
+        el.closest('[role="treeitem"]') !== null ||
+        NEW_SESSION_SELECTORS.some(sel => el.closest(sel) !== null)
+      if (isSidebarNav) close()
+    }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    document.addEventListener('click', onClick, true)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.removeEventListener('click', onClick, true)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   // 打开时焦点进 surface（键盘可立即操作；surface 不锁 body 滚动）
@@ -368,6 +384,15 @@ export function GlobalDashboardSurface() {
           </Button>
         ) : null}
         {startError ? <span className="herdr-gds-start-error">{t('banner.startFailed', { error: startError })}</span> : null}
+        {dashSnap ? (
+          <span className="herdr-gds-fresh">
+            {dashSnap.stale ? <span className="herdr-dash-stale-badge">{t('dashboard.stale')}</span> : null}
+            <span className="herdr-gds-fresh-time">
+              {dashSnap.updated_at > 0 ? t('dashboard.lastUpdated', { time: formatTime(dashSnap.updated_at) }) : t('dashboard.noData')}
+            </span>
+            <Button variant="outline" size="sm" onClick={refreshDash}>{t('dashboard.refresh')}</Button>
+          </span>
+        ) : null}
         <button type="button" className="herdr-gds-close" aria-label={t('global.close')} onClick={close}>
           ✕
         </button>
@@ -378,10 +403,7 @@ export function GlobalDashboardSurface() {
         </div>
       ) : null}
       <div className="herdr-gds-body">
-        <DashboardContent
-          onPaneClick={onPaneClick}
-          onNotice={showNotice}
-        />
+        <DashboardContent onPaneClick={onPaneClick} />
       </div>
     </section>
   )

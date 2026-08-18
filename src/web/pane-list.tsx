@@ -18,7 +18,7 @@ import { useHerdrMode } from './mode.ts'
 import { focusPaneInHerdrTab, getSessionId } from './navigation.ts'
 import { fetchSelfPaneId } from './session-pane.ts'
 import { HerdrServerBanner } from './server-banner.tsx'
-import { useHerdrStatus } from './store.ts'
+import { useHerdrStatus, useGlobalDashboardOpen } from './store.ts'
 import type { HerdrAgentStatus } from './types.ts'
 
 /**
@@ -48,6 +48,7 @@ export function HerdrPaneList() {
   // 语言订阅：切语言时面板文案跟随
   void useHerdrLang()
   const herdrMode = useHerdrMode()
+  const gdOpen = useGlobalDashboardOpen()
   const { snap, error } = useHerdrStatus()
   const [collapsed, setCollapsed] = useState(false)
   const [collapsedWs, setCollapsedWs] = useState<Set<string>>(new Set())
@@ -109,11 +110,23 @@ export function HerdrPaneList() {
     setCollapsed(true)
   }
 
-  // 会话页面检测（conversation root 存在且非 hero 相位）
+  // 会话页面检测（conversation root 存在且非 hero 相位；且激活 tab 为「对话」——
+  // 轨迹 / Herdr tab 激活时浮层面板隐藏：DSH 的 tab 面板叠加渲染，root 始终可见，
+  // 只能以激活 tab（aria-selected）判定当前视图）
   useEffect(() => {
     const check = () => {
       const root = document.querySelector('[data-phase]')
-      setInSession(Boolean(root && root.getAttribute('data-phase') !== 'hero'))
+      const tablist = document.querySelector('[role="tablist"]')
+      const activeTab = tablist?.querySelector('[role="tab"][aria-selected="true"]')
+      const firstTab = tablist?.querySelector('[role="tab"]')
+      const onConvTab = Boolean(
+        activeTab &&
+        firstTab &&
+        // 首 tab 兜底 + 双语文案命中（locale 服务 zh/en）；herdr-tab 显式排除
+        (activeTab === firstTab || /^(对话|Conversation)$/.test(activeTab.textContent?.trim() ?? '')) &&
+        !activeTab.classList.contains('herdr-tab'),
+      )
+      setInSession(Boolean(root && root.getAttribute('data-phase') !== 'hero' && onConvTab))
     }
     check()
     const timer = setInterval(check, 1000)
@@ -173,8 +186,8 @@ export function HerdrPaneList() {
 
   const panelIdPrefix = useId()
 
-  // 非 herdr 模式不渲染面板（D1 已确认：与 Tab/胶囊一致门控）
-  if (!inSession || !herdrMode) return null
+  // 非 herdr 模式不渲染面板（D1 已确认：与 Tab/胶囊一致门控）；全局面板打开时隐藏
+  if (!inSession || !herdrMode || gdOpen) return null
 
   // 折叠态：仅 Herdr logo（可拖动、吸附）
   if (collapsed) {

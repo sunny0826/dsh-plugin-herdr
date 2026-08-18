@@ -1,30 +1,26 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   agentTheme,
   applyPaneOrder,
   ariaStateLabel,
-  disclosureState,
   filterGroupsToSession,
-  focusBeforeRemoval,
   loadPaneOrder,
   paneDisplayState,
-  paneKeyboardHandlers,
   reorderPanes,
   savePaneOrder,
   statusSortPriority,
-  validateLabel,
 } from '../client-logic.ts'
 import { t, useHerdrLang } from './i18n.ts'
 import { getPendingFocusPane, setPendingFocusPane, getSessionId } from './navigation.ts'
 import { fetchSelfPaneId } from './session-pane.ts'
 import { HerdrServerBanner } from './server-banner.tsx'
+import { HerdrLogo } from './pane-list.tsx'
 import { useHerdrStatus, useHerdrStart } from './store.ts'
 import { useHerdrMode } from './mode.ts'
-import type { HerdrAgentStatus, HerdrPaneView, HerdrWorkspaceView } from './types.ts'
+import type { HerdrAgentStatus, HerdrPaneView } from './types.ts'
 import { PaneCard } from './pane-card.tsx'
 import { PaneTerminal } from './pane-terminal.tsx'
-import { ConfirmDialog } from './confirm-dialog.tsx'
 
 // 会话页 header 状态胶囊（conversation.session.header.actions）
 export function HerdrHeaderPill() {
@@ -76,7 +72,6 @@ export function HerdrPanesView() {
   void useHerdrLang()
   const herdrMode = useHerdrMode()
   const { snap, error, refresh } = useHerdrStatus()
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null)
   const maximizedTriggerRef = useRef<HTMLElement | null>(null)
   // 拖拽状态：dragId（被拖项）、overId + insertPos（目标卡片与插入方向，渲染指示线）
@@ -84,25 +79,16 @@ export function HerdrPanesView() {
   const [overId, setOverId] = useState<string | null>(null)
   const [insertPos, setInsertPos] = useState<'before' | 'after' | null>(null)
 
-  // ── T11/T12 本地乐观状态 ──────────────────────────────────────────
+  // ── T11 本地乐观状态 ──────────────────────────────────────────────
   // selfPaneId：本对话绑定 pane（不渲染 ✕）
   const [selfPaneId, setSelfPaneId] = useState<string | null>(null)
   const selfPaneIdRef = useRef<string | null>(null)
   // 关闭成功后的本地隐藏集（乐观移除；轮询收敛/失败回滚前过滤展示）
   const [hiddenPaneIds, setHiddenPaneIds] = useState<Set<string>>(new Set())
-  const [hiddenWsIds, setHiddenWsIds] = useState<Set<string>>(new Set())
   // 重命名本地覆盖：Map<id, string | null>（null = 清除名称；undefined = 无覆盖）
   const [labelOverrides, setLabelOverrides] = useState<Map<string, string | null>>(new Map())
-  // workspace 组头关闭/重命名 UI 状态
-  const [closingWs, setClosingWs] = useState<{ ws: HerdrWorkspaceView; paneCount: number } | null>(null)
-  const closeWsTriggerRef = useRef<HTMLButtonElement | null>(null)
-  const [renamingWs, setRenamingWs] = useState<string | null>(null)
-  const [wsDraft, setWsDraft] = useState('')
-  // 同步防重入：workspace rename 的 Enter 与随之而来的 blur 各触发一次，用 ref 去重
-  const wsCommittedRef = useRef(false)
   // 已查询过的会话 id（绑定 pane 轮询去重）
   const lastSessionId = useRef<string | undefined>(undefined)
-  const [wsOpBusy, setWsOpBusy] = useState(false)
   const [actionError, setActionError] = useState<ActionError | null>(null)
   // 跨 workspace drop 提示（T15）：拖动手柄拖动但未在同 workspace 内落位时显示的顶部横幅
   const [dropHint, setDropHint] = useState<string | null>(null)
@@ -119,10 +105,9 @@ export function HerdrPanesView() {
     setActionError(prev => ({ message, key: (prev?.key ?? 0) + 1 }))
   }, [])
 
-  // 面板跳转：展开对应 workspace/pane 并滚动高亮（挂载时消费 pending）
+  // 面板跳转：滚动高亮对应 pane（挂载时消费 pending）
   useEffect(() => {
     const focusPane = (paneId: string) => {
-      setCollapsed(new Set())
       requestAnimationFrame(() => {
         const el = document.querySelector(`[data-pane-id='${paneId}']`)
         if (el instanceof HTMLElement) {
@@ -191,82 +176,58 @@ export function HerdrPanesView() {
     }
     return m
   }, [groups, hiddenPaneIds, labelOverrides])
-  // workspace 组可见性 + label override
+  // workspace 组 label override（v3：单一会话 workspace，无组头/折叠）
   const visibleGroups = useMemo(() => {
-    return groups
-      .filter(g => !(hiddenWsIds.has(g.workspace.workspace_id)))
-      .map(g => {
-        const ov = labelOverrides.get(g.workspace.workspace_id)
-        if (ov === undefined) return g
-        return { ...g, workspace: { ...g.workspace, label: ov === null ? undefined : ov } }
-      })
-  }, [groups, hiddenWsIds, labelOverrides])
+    return groups.map(g => {
+      const ov = labelOverrides.get(g.workspace.workspace_id)
+      if (ov === undefined) return g
+      return { ...g, workspace: { ...g.workspace, label: ov === null ? undefined : ov } }
+    })
+  }, [groups, labelOverrides])
+  // 扁平 pane 网格：全部可见 pane（按 ws 持久化顺序合并）
+  const wsId = visibleGroups[0]?.workspace.workspace_id ?? ''
+  const allPanes = useMemo(
+    () => visibleGroups.flatMap(g => orderedByWs.get(g.workspace.workspace_id) ?? g.panes),
+    [visibleGroups, orderedByWs],
+  )
 
-  const paneCount = visibleGroups.reduce((n, g) => n + g.panes.length, 0)
+  const paneCount = allPanes.length
   const wsCount = visibleGroups.length
-  const agentCount = visibleGroups.reduce((n, g) => n + g.panes.filter(p => agentByPane.has(p.pane_id)).length, 0)
+  const agentCount = allPanes.filter(p => agentByPane.has(p.pane_id)).length
   const serverRunning = snap?.server?.running === true
-  const workspaceIdPrefix = useId()
-  // 五态状态摘要条（design: herdr-tab-redesign §4.2）
+  // 五态状态摘要条（design: herdr-tab-redesign §4.2；v3 移除 done 瓦片）
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = { working: 0, blocked: 0, idle: 0, done: 0, unknown: 0 }
-    for (const g of visibleGroups) {
-      for (const p of g.panes) {
-        const st = paneDisplayState(agentByPane.get(p.pane_id)?.status ?? p.agent_status)
-        counts[st]++
-      }
+    for (const p of allPanes) {
+      const st = paneDisplayState(agentByPane.get(p.pane_id)?.status ?? p.agent_status)
+      counts[st]++
     }
     return counts
-  }, [visibleGroups, agentByPane])
-
-  const toggleWs = (id: string) => {
-    setCollapsed(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
+  }, [allPanes, agentByPane])
 
   // ── T11 关闭交互 ──────────────────────────────────────────────────
-  // 通用：POST + 乐观移除 + 失败回滚 + 错误横幅 + refresh
-  const postClose = useCallback(async (kind: 'pane' | 'workspace', id: string): Promise<void> => {
-    if (kind === 'pane') {
-      setHiddenPaneIds(prev => new Set(prev).add(id))
-    } else {
-      setHiddenWsIds(prev => new Set(prev).add(id))
-    }
+  // 通用：POST + 乐观移除 + 失败回滚 + 错误横幅 + refresh（v3：仅 pane 级关闭）
+  const postClose = useCallback(async (paneId: string): Promise<void> => {
+    setHiddenPaneIds(prev => new Set(prev).add(paneId))
     try {
       const resp = await fetch('/herdr-close', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ kind, id }),
+        body: JSON.stringify({ kind: 'pane', id: paneId }),
       })
       const body = (await resp.json()) as { ok?: boolean; error?: string }
       if (!body.ok) throw new Error(body.error ?? `herdr-close HTTP ${resp.status}`)
       refresh()
     } catch (e) {
       // 回滚乐观移除
-      if (kind === 'pane') setHiddenPaneIds(prev => { const n = new Set(prev); n.delete(id); return n })
-      else setHiddenWsIds(prev => { const n = new Set(prev); n.delete(id); return n })
+      setHiddenPaneIds(prev => { const n = new Set(prev); n.delete(paneId); return n })
       showErr(e instanceof Error ? e.message : String(e))
     }
   }, [refresh, showErr])
 
   const onClosePane = useCallback((paneId: string) => {
-    void postClose('pane', paneId)
+    void postClose(paneId)
   }, [postClose])
-
-  const onConfirmCloseWs = useCallback(() => {
-    if (!closingWs || wsOpBusy) return
-    setWsOpBusy(true)
-    void postClose('workspace', closingWs.ws.workspace_id).finally(() => {
-      setWsOpBusy(false)
-      // 成功时 closingWs 已无意义；失败也已回滚。UI 上关闭对话框
-      setClosingWs(null)
-    })
-  }, [closingWs, wsOpBusy, postClose])
 
   // ── T12 重命名交互 ────────────────────────────────────────────────
   const doRename = useCallback(async (kind: 'pane' | 'workspace', id: string, label: string | null): Promise<void> => {
@@ -289,36 +250,6 @@ export function HerdrPanesView() {
   const onRenamePane = useCallback((paneId: string, label: string | null) => {
     return doRename('pane', paneId, label)
   }, [doRename])
-
-  // workspace 重命名：进入 inline input
-  const beginRenameWs = useCallback((g: { workspace: HerdrWorkspaceView }) => {
-    if (wsOpBusy) return
-    wsCommittedRef.current = false
-    setRenamingWs(g.workspace.workspace_id)
-    setWsDraft(g.workspace.label ?? g.workspace.workspace_id)
-    setActionError(null)
-  }, [wsOpBusy])
-
-  const commitRenameWs = useCallback(async (wsId: string) => {
-    if (wsCommittedRef.current || wsOpBusy) return
-    let label: string | null
-    try {
-      label = validateLabel(wsDraft)
-    } catch (e) {
-      showErr(e instanceof Error ? e.message : String(e))
-      return
-    }
-    wsCommittedRef.current = true // 防 Enter+blur 双提交
-    setRenamingWs(null)
-    setWsOpBusy(true)
-    try {
-      await doRename('workspace', wsId, label)
-    } catch (e) {
-      showErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setWsOpBusy(false)
-    }
-  }, [wsDraft, doRename, showErr, wsOpBusy])
 
   // ── 拖拽事件（HTML5 DnD，仅同 workspace 排序） ──────────────────────────
 
@@ -394,33 +325,36 @@ export function HerdrPanesView() {
 
   return (
     <div className="herdr-root">
-      {serverRunning ? (
-        <div className="herdr-server-summary" role="status" aria-label={t('banner.running')}>
-          <span className="herdr-conn-dot ok" />
-          <span className="herdr-server-title">{t('banner.running')}</span>
-          {snap?.server?.version ? <span className="herdr-server-version">v{snap.server.version}</span> : null}
-        </div>
-      ) : (
-        <HerdrServerBanner snap={snap} error={error} onStarted={refresh} />
-      )}
+      {/* 运行态折叠进 .herdr-head（连接点 + 版本）；非运行态保留横幅（承载启动流程） */}
+      {!serverRunning ? <HerdrServerBanner snap={snap} error={error} onStarted={refresh} /> : null}
 
       {dropHint ? <div className="herdr-drop-hint">{dropHint}</div> : null}
 
       {paneCount > 0 ? (
-        <div className="herdr-state-summary" role="status" aria-label={t('view.statusSummary')}>
+        <div className="herdr-state-tiles" role="status" aria-label={t('view.statusSummary')}>
           {(['working', 'blocked', 'idle', 'done', 'unknown'] as const)
+            .filter(s => s !== 'done')
             .filter(s => statusCounts[s] > 0)
             .sort((a, b) => statusSortPriority(a) - statusSortPriority(b))
             .map(s => (
-              <span key={s} data-state={s}>
-                <b>{statusCounts[s]}</b> {t(ariaStateLabel(s))}
+              <span key={s} className="herdr-state-tile" data-state={s}>
+                <b>{statusCounts[s]}</b>
+                <span className="herdr-state-tile-label">{t(ariaStateLabel(s))}</span>
               </span>
             ))}
         </div>
       ) : null}
 
       <div className="herdr-head">
-        <span className="herdr-head-title">Herdr</span>
+        <span className="herdr-head-title">
+          {visibleGroups[0]?.workspace.label ?? visibleGroups[0]?.workspace.workspace_id ?? 'Herdr'}
+        </span>
+        {serverRunning ? (
+          <span className="herdr-head-server" role="status" aria-label={t('banner.running')}>
+            <span className="herdr-conn-dot ok" aria-hidden />
+            {snap?.server?.version ? <span className="herdr-head-version">v{snap.server.version}</span> : null}
+          </span>
+        ) : null}
         <span className="herdr-header-stats">
           {t('view.stats', { ws: wsCount, panes: paneCount, agents: agentCount })}
         </span>
@@ -446,123 +380,34 @@ export function HerdrPanesView() {
         </div>
       ) : null}
 
-      {!maximizedPaneId && visibleGroups.length === 0 ? (
+      {!maximizedPaneId && allPanes.length === 0 ? (
         <div className="herdr-empty">
+          <HerdrLogo className="herdr-empty-logo" />
           {selfPaneId ? t('panel.noPane') : t('panel.fetchingPane')}
         </div>
       ) : !maximizedPaneId ? (
-        <div className="herdr-ws-list">
-          {visibleGroups.map(g => {
-            const wsPanes = orderedByWs.get(g.workspace.workspace_id) ?? g.panes
-            const workspaceId = g.workspace.workspace_id
-            const bodyId = `${workspaceIdPrefix}-${workspaceId}-body`
-            const disclosure = disclosureState(!collapsed.has(workspaceId), bodyId)
-            return (
-              <section key={g.workspace.workspace_id} className="herdr-ws" data-collapsed={collapsed.has(g.workspace.workspace_id) || undefined}>
-                <div className="herdr-ws-head">
-                  {renamingWs === workspaceId ? (
-                    <input
-                      className="herdr-ws-rename-input"
-                      autoFocus
-                      maxLength={64}
-                      value={wsDraft}
-                      onChange={e => setWsDraft(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') void commitRenameWs(workspaceId)
-                        else if (e.key === 'Escape') setRenamingWs(null)
-                      }}
-                      onBlur={() => void commitRenameWs(workspaceId)}
-                    />
-                  ) : (
-                    <button
-                      id={`${workspaceIdPrefix}-${workspaceId}-toggle`}
-                      type="button"
-                      className="herdr-ws-toggle"
-                      aria-expanded={disclosure.ariaExpanded}
-                      aria-controls={disclosure.controlsId}
-                      onClick={() => toggleWs(workspaceId)}
-                      onKeyDown={e => {
-                        const action = paneKeyboardHandlers(e.key)
-                        if (!action.trigger) return
-                        if (action.preventDefault) e.preventDefault()
-                        toggleWs(workspaceId)
-                      }}
-                    >
-                      <svg className="herdr-ws-chev" width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4z" /></svg>
-                      <span
-                        className="herdr-ws-name"
-                        onClick={event => event.stopPropagation()}
-                        onDoubleClick={() => beginRenameWs(g)}
-                      >
-                        <span className="herdr-ws-label">{g.workspace.label ?? workspaceId}</span>
-                      </span>
-                      <span className="herdr-ws-stats">
-                        {t('view.wsMeta', {
-                          count: wsPanes.length,
-                          agents: wsPanes.filter(p => agentByPane.has(p.pane_id)).length,
-                        })}
-                        {g.tabs.length > 0 ? ` · ${t('view.tabId', { id: g.tabs[0].tab_id })}` : ''}
-                      </span>
-                    </button>
-                  )}
-                  <span className="herdr-ws-actions">
-                    {!renamingWs ? (
-                      <button
-                        type="button"
-                        className="herdr-ws-edit"
-                        title={t('view.renameWorkspace')}
-                        aria-label={t('view.renameWorkspace')}
-                        disabled={wsOpBusy}
-                        onClick={() => beginRenameWs(g)}
-                      >
-                        ✎
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="herdr-ws-close"
-                      title={t('view.closeWorkspace')}
-                      aria-label={t('view.closeWorkspace')}
-                      ref={closeWsTriggerRef}
-                      onClick={event => {
-                        closeWsTriggerRef.current = event.currentTarget
-                        if (wsOpBusy) return
-                        setClosingWs({ ws: g.workspace, paneCount: g.panes.length })
-                      }}
-                    >
-                      ✕
-                    </button>
-                  </span>
-                </div>
-                <div
-                  id={`${workspaceIdPrefix}-${g.workspace.workspace_id}-body`}
-                  className="herdr-ws-body"
-                >
-                  {wsPanes.map(pane => (
-                    <PaneCard
-                      key={pane.pane_id}
-                      pane={pane}
-                      agent={agentByPane.get(pane.pane_id)}
-                      self={pane.pane_id === selfPaneId}
-                      onClose={() => onClosePane(pane.pane_id)}
-                      onRename={label => onRenamePane(pane.pane_id, label)}
-                      onMaximize={(triggerEl) => {
-                        maximizedTriggerRef.current = triggerEl
-                        setMaximizedPaneId(pane.pane_id)
-                      }}
-                      dragging={dragId === pane.pane_id}
-                      insert={overId === pane.pane_id ? insertPos : null}
-                      onHandleDragStart={e => onHandleDragStart(e, pane.pane_id)}
-                      onHandleDragEnd={onHandleDragEnd}
-                      onCardDragOver={e => onCardDragOver(e, pane.pane_id, g.workspace.workspace_id)}
-                      onCardDrop={e => onCardDrop(e, pane.pane_id, g.workspace.workspace_id)}
-                      onCardDragLeave={onCardDragLeave}
-                    />
-                  ))}
-                </div>
-              </section>
-            )
-          })}
+        <div className="herdr-pane-grid">
+          {allPanes.map(pane => (
+            <PaneCard
+              key={pane.pane_id}
+              pane={pane}
+              agent={agentByPane.get(pane.pane_id)}
+              self={pane.pane_id === selfPaneId}
+              onClose={() => onClosePane(pane.pane_id)}
+              onRename={label => onRenamePane(pane.pane_id, label)}
+              onMaximize={(triggerEl) => {
+                maximizedTriggerRef.current = triggerEl
+                setMaximizedPaneId(pane.pane_id)
+              }}
+              dragging={dragId === pane.pane_id}
+              insert={overId === pane.pane_id ? insertPos : null}
+              onHandleDragStart={e => onHandleDragStart(e, pane.pane_id)}
+              onHandleDragEnd={onHandleDragEnd}
+              onCardDragOver={e => onCardDragOver(e, pane.pane_id, wsId)}
+              onCardDrop={e => onCardDrop(e, pane.pane_id, wsId)}
+              onCardDragLeave={onCardDragLeave}
+            />
+          ))}
         </div>
       ) : null}
 
@@ -598,19 +443,6 @@ export function HerdrPanesView() {
           />
         </div>
       ) : null}
-
-      <ConfirmDialog
-        visible={closingWs !== null}
-        busy={wsOpBusy}
-        title={closingWs ? t('view.closeWorkspaceConfirm', { id: closingWs.ws.label ?? closingWs.ws.workspace_id, count: String(closingWs.paneCount) }) : ''}
-        confirmLabel={t('view.close')}
-        onConfirm={() => {
-          focusBeforeRemoval(closeWsTriggerRef.current)
-          closeWsTriggerRef.current = null
-          void onConfirmCloseWs()
-        }}
-        onCancel={() => { if (!wsOpBusy) setClosingWs(null) }}
-      />
     </div>
   )
 }

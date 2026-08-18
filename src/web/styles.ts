@@ -34,85 +34,36 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
   border-bottom: 1px solid var(--dsw-alias-border-l1);
 }
 .herdr-head-title { font-size: 15px; font-weight: 600; }
+/* 运行态折叠进 header：连接点 + 版本（mono tertiary） */
+.herdr-head-server {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.herdr-head-version {
+  font-family: var(--ds-font-family-code);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
 .herdr-header-stats { font-size: 12px; color: var(--dsw-alias-label-tertiary); }
 .herdr-head-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.herdr-ws-list { display: flex; flex-direction: column; gap: 2px; }
-.herdr-ws { border-radius: 12px; }
-.herdr-ws + .herdr-ws { margin-top: 12px; }
-.herdr-ws-head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 10px; border-radius: 10px; cursor: pointer;
-  user-select: none;
-}
-.herdr-ws-toggle {
-  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
-  padding: 0; border: none; border-radius: 10px; background: transparent;
-  color: inherit; text-align: left; cursor: pointer; user-select: none;
-}
-.herdr-ws-toggle:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.herdr-ws-actions { display: flex; align-items: center; gap: 2px; flex: none; }
-.herdr-ws-head:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.herdr-ws-chev {
-  width: 14px; height: 14px; color: var(--dsw-alias-label-tertiary); flex: none;
-  transition: transform .15s var(--ds-ease-in-out);
-}
-.herdr-ws[data-collapsed] .herdr-ws-chev { transform: rotate(-90deg); }
-.herdr-ws-label { font-size: 14px; line-height: 22px; font-weight: 500; }
-.herdr-ws-id {
-  font-family: var(--ds-font-family-code); font-size: 11px; line-height: 16px;
-  color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-module-platform);
-  border-radius: 5px; padding: 0 6px;
-}
-.herdr-ws-stats { margin-left: auto; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
-.herdr-ws-stats b { color: var(--dsw-alias-label-secondary); font-weight: 500; }
-.herdr-ws-name { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
-.herdr-ws-name .herdr-ws-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* ws 组头操作按钮（T11 ✕ / T12 ✎）：hover 显现 */
-.herdr-ws-close,
-.herdr-ws-edit {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; padding: 0; flex: none;
-  border: none; border-radius: 6px; background: transparent;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px; line-height: 16px; cursor: pointer;
-  opacity: 0; transition: opacity .12s var(--ds-ease-in-out), background .12s var(--ds-ease-in-out), color .12s var(--ds-ease-in-out);
-}
-.herdr-ws-head:hover .herdr-ws-close,
-.herdr-ws-head:hover .herdr-ws-edit,
-.herdr-ws-close:focus-visible,
-.herdr-ws-edit:focus-visible { opacity: 1; }
-.herdr-ws-edit:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
-.herdr-ws-close:hover { background: var(--dsw-alias-state-error-tertiary); color: var(--dsw-alias-state-error-primary); }
-.herdr-ws-close:disabled,
-.herdr-ws-edit:disabled { opacity: .4; cursor: default; }
-/* ws 组头 rename inline input */
-.herdr-ws-rename-input {
-  font-family: var(--dsw-font-family); font-size: 14px; line-height: 22px;
-  font-weight: 500; min-width: 0; max-width: 240px;
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-module-platform);
-  border: 1px solid var(--dsw-alias-state-business-primary);
-  border-radius: 6px; padding: 0 6px; box-sizing: border-box;
-}
-.herdr-ws-rename-input:focus { outline: none; }
-.herdr-ws-body {
+/* 扁平 pane 网格（v3：单一会话 workspace，无组头；沿用原 ws-body 双列布局） */
+.herdr-pane-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  /* 卡片按内容高度（收起=矮、展开=高），不跨行拉伸，否则收起态被同行最高卡片撑住 */
   align-items: start;
   padding: 2px 0 6px 4px;
 }
-.herdr-ws[data-collapsed] .herdr-ws-body { display: none; }
 /* 响应式断点：720px 以下单列（P2-9） */
 @media (max-width: 720px) {
-  .herdr-ws-body { grid-template-columns: minmax(0, 1fr); }
+  .herdr-pane-grid { grid-template-columns: minmax(0, 1fr); }
 }
 /* 480px 以下隐藏次要 meta（pane id、时间），保留 pane 名、状态和主操作 */
 @media (max-width: 480px) {
   .herdr-header-stats { display: none; }
-  .herdr-ws-id { display: none; }
-  .herdr-pcard-cwd { display: none; }
   .herdr-pcard-time { display: none; }
 }
 .herdr-pane {
@@ -158,6 +109,8 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
   transition: border-color .15s var(--ds-ease-in-out), background .15s var(--ds-ease-in-out);
 }
 .herdr-pcard[data-focused] { border-color: var(--dsw-alias-state-business-primary); }
+/* 本对话 pane：business-secondary 描边 + 名称后 self 标签 */
+.herdr-pcard[data-self] { border-color: var(--dsw-alias-state-business-secondary); }
 .herdr-pcard-head {
   display: flex; align-items: center; gap: 8px;
   min-width: 0;
@@ -234,13 +187,6 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
   transition: transform .15s var(--ds-ease-in-out);
 }
 .herdr-pcard[data-open] .herdr-pcard-chev { transform: rotate(90deg); }
-.herdr-pcard-cwd {
-  font-family: var(--ds-font-family-code); font-size: 11px; line-height: 16px;
-  color: var(--dsw-alias-label-tertiary);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.herdr-pcard-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.herdr-pcard-cwd-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 日志主体：行级渲染；收起 3 行渐变淡出；展开滚动区 220px、等宽 */
 .herdr-pcard-log {
@@ -723,23 +669,35 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
 .herdr-state-text[data-state=working] { color: var(--dsw-alias-state-business-primary); }
 .herdr-state-text[data-state=blocked] { color: var(--dsw-alias-state-error-primary); }
 .herdr-state-text[data-state=idle] { color: var(--dsw-alias-state-success-primary); }
-.herdr-state-text[data-state=done] { color: var(--dsw-alias-state-success-primary); }
+/* done 从成功绿改为中性灰（dashboard-redesign：done≠idle） */
+.herdr-state-text[data-state=done] { color: var(--dsw-alias-label-tertiary); }
 .herdr-state-text[data-state=unknown] { color: var(--dsw-alias-label-tertiary); }
-.herdr-state-summary {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  font-size: 11px; line-height: 18px; color: var(--dsw-alias-label-tertiary);
+/* 五态 KPI-lite 状态块（design: herdr-tab-redesign §4.2 重设计——紧凑瓦片，
+   与 dashboard KPI 同一视觉语言：16px 数字 + 11px 标签 + 卡片面） */
+.herdr-state-tiles {
+  display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap;
 }
-.herdr-state-summary span {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 2px 7px; border-radius: 999px;
-  background: var(--dsw-alias-bg-module-platform);
+.herdr-state-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 8px 12px; border-radius: 12px;
   border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+  min-width: 0;
 }
-.herdr-state-summary span[data-state=working] { color: var(--dsw-alias-state-business-primary); border-color: var(--dsw-alias-state-business-secondary); }
-.herdr-state-summary span[data-state=blocked] { color: var(--dsw-alias-state-error-primary); border-color: var(--dsw-alias-state-error-secondary); }
-.herdr-state-summary span[data-state=idle],
-.herdr-state-summary span[data-state=done] { color: var(--dsw-alias-state-success-primary); border-color: var(--dsw-alias-state-success-secondary); }
-.herdr-state-summary span[data-state=unknown] { color: var(--dsw-alias-label-tertiary); }
+.herdr-state-tile b {
+  font-size: 16px; font-weight: 600; line-height: 22px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary);
+}
+.herdr-state-tile-label {
+  font-size: 11px; line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.herdr-state-tile[data-state='working'] b { color: var(--dsw-alias-state-business-primary); }
+.herdr-state-tile[data-state='blocked'] b { color: var(--dsw-alias-state-error-primary); }
+.herdr-state-tile[data-state='idle'] b { color: var(--dsw-alias-state-success-primary); }
+.herdr-state-tile[data-state='done'] b,
+.herdr-state-tile[data-state='unknown'] b { color: var(--dsw-alias-label-tertiary); }
 /* dotState() legacy: StateDot primitive 兼容（ongoing/error/done） */
 .herdr-state-text[data-dot=done] { color: var(--dsw-alias-state-success-primary); }
 .herdr-state-text[data-dot=error] { color: var(--dsw-alias-state-error-primary); }
@@ -747,8 +705,14 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
 .herdr-state-text[data-dot=ongoing] { color: var(--dsw-alias-state-business-primary); }
 .herdr-agent-pill .herdr-agent-name { font-weight: 500; }
 .herdr-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
   font-size: 12px; color: var(--dsw-alias-label-tertiary);
   padding: 28px 16px; text-align: center; line-height: 20px;
+}
+/* 空态 herdr logo（28px tertiary；与会话视图/浮层空态共用） */
+.herdr-empty-logo {
+  width: 28px; height: 28px; display: block;
+  color: var(--dsw-alias-label-tertiary);
 }
 .herdr-empty code {
   font-family: var(--ds-font-family-code);
@@ -928,10 +892,12 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
 .pl-paneid { font-family: var(--ds-font-family-code); font-size: 11.5px; line-height: 16px; font-weight: 500; }
 .pl-agent { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pl-state { margin-left: auto; font-size: 11px; line-height: 16px; flex: none; }
-.pl-state[data-state=done] { color: var(--dsw-alias-state-success-primary); }
+/* done 与 idle 区分（done=中性灰；与 dashboard/herdr-tab 一致） */
+.pl-state[data-state=done] { color: var(--dsw-alias-label-tertiary); }
 .pl-state[data-state=warning] { color: var(--dsw-alias-state-warn-primary); }
 .pl-state[data-state=error] { color: var(--dsw-alias-state-error-primary); }
-.pl-self-tag {
+.pl-self-tag,
+.herdr-pcard-self-tag {
   font-size: 9.5px; line-height: 14px; font-weight: 600; flex: none;
   color: var(--dsw-alias-state-business-primary);
   border: 1px solid var(--dsw-alias-state-business-primary);
@@ -972,18 +938,6 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
   100% { box-shadow: 0 0 0 0 var(--dsw-alias-state-business-tertiary); }
 }
 /* ── 服务状态看板条 / 胶囊 / 安装提示 / hero 卡片 ─────────────── */
-.herdr-server-summary {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 12px; border-radius: 10px;
-  font-size: 12px; line-height: 18px;
-  border: 1px solid var(--dsw-alias-state-success-secondary);
-  background: var(--dsw-alias-state-success-tertiary);
-}
-.herdr-server-summary .herdr-server-title { font-weight: 600; }
-.herdr-server-version {
-  margin-left: auto; color: var(--dsw-alias-label-secondary);
-  font-family: var(--ds-font-family-code); font-size: 11px;
-}
 .herdr-server-banner {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 12px; border-radius: 10px;
@@ -1178,10 +1132,46 @@ html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text[data-herdr-lang='
   }
 }
 
-/* ── Herdr Dashboard（design: dashboard §5.5；全部使用 DSH herdr-*/dsw-alias-* token） ── */
+/* ── Herdr Dashboard（design: dashboard §5.5；全部使用 DSH token：herdr-* / dsw-alias-*） ── */
 .herdr-dash {
   display: flex; flex-direction: column; gap: 10px;
   padding: 10px 16px 24px; box-sizing: border-box;
+  max-width: 1080px; margin: 0 auto; width: 100%;
+}
+/* KPI 条：窄屏自动折行成多列 */
+.herdr-dash-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+.herdr-dash-kpi {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px; border-radius: 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+  min-width: 0;
+}
+.herdr-dash-kpi-value {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 22px; font-weight: 600; line-height: 30px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary);
+}
+/* Working 用品牌紫（语义优先于品牌的红留给 Blocked） */
+.herdr-dash-kpi-working .herdr-dash-kpi-value { color: var(--herdr-brand); }
+.herdr-dash-kpi-blocked .herdr-dash-kpi-value { color: var(--dsw-alias-state-error-primary); }
+.herdr-dash-kpi-label {
+  font-size: 11px; line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+/* Blocked > 0 时的小脉冲点（复用 herdr-state-pulse；reduced-motion 关闭） */
+.herdr-dash-kpi-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: none;
+  background: var(--dsw-alias-state-error-primary);
+  animation: herdr-state-pulse 1.4s var(--ds-ease-in-out) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .herdr-dash-kpi-dot { animation: none; }
 }
 /* 摘要卡片网格：窄屏自动单列 */
 .herdr-dash-grid {
@@ -1223,13 +1213,9 @@ html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text[data-herdr-lang='
 .herdr-dash-chip[data-state='working'] { color: var(--dsw-alias-state-business-primary); }
 .herdr-dash-chip[data-state='blocked'] { color: var(--dsw-alias-state-error-primary); }
 .herdr-dash-chip[data-state='idle'] { color: var(--dsw-alias-state-success-primary); }
-/* 数据新鲜度行 */
-.herdr-dash-fresh {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-  font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary);
-  min-width: 0;
-}
-.herdr-dash-fresh > span:not(.herdr-dash-actions) { min-width: 0; }
+/* done 从成功绿改为中性灰（dashboard-redesign：done≠idle） */
+.herdr-dash-chip[data-state='done'] { color: var(--dsw-alias-label-tertiary); }
+/* 数据新鲜度徽标 / 最近错误行（新鲜度时间与刷新按钮已上移至 surface header） */
 .herdr-dash-stale-badge {
   font-size: 11px; line-height: 16px; font-weight: 600; flex: none;
   color: var(--dsw-alias-state-warn-label);
@@ -1242,7 +1228,6 @@ html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text[data-herdr-lang='
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
   max-width: min(36rem, 100%);
 }
-.herdr-dash-actions { margin-left: auto; flex: none; }
 /* workspace 列表 */
 .herdr-dash-section { display: flex; flex-direction: column; gap: 6px; }
 .herdr-dash-section-head {
@@ -1259,16 +1244,30 @@ html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text[data-herdr-lang='
   border-radius: 12px;
   background: var(--dsw-alias-bg-layer-1);
 }
-.herdr-dash-ws + .herdr-dash-ws { margin-top: 6px; }
+/* workspace 卡片网格：≥480px 双列，窄屏自动单列 */
+.herdr-dash-ws-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 10px;
+}
 /* workspace 卡片不可点击（关闭 surface 由 header ✕ 承担） */
 .herdr-dash-ws-card {
   padding: 8px 12px 10px;
   transition: border-color .15s var(--ds-ease-in-out), background .15s var(--ds-ease-in-out);
 }
 .herdr-dash-ws-head {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; flex-direction: column; gap: 4px;
   padding: 0 0 6px;
   user-select: none;
+}
+.herdr-dash-ws-line1 {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+.herdr-dash-ws-line2 {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+.herdr-dash-ws-line1 .herdr-dash-ws-chips {
+  margin-left: auto; margin-top: 0; flex: none;
 }
 .herdr-dash-ws-label {
   font-size: 13px; line-height: 20px; font-weight: 600;
@@ -1279,73 +1278,57 @@ html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text[data-herdr-lang='
   color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-module-platform);
   border-radius: 5px; padding: 0 6px;
 }
+/* checkout 路径：等宽、三级灰、超长省略（title 见全值） */
 .herdr-dash-ws-meta {
-  margin-left: auto; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary);
-  white-space: nowrap; flex: none;
+  font-family: var(--ds-font-family-code); font-size: 11px; line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; flex: 1;
 }
 .herdr-dash-ws-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-/* ── agent-kind Treemap（v4 需求 7；kind 色 token 映射，无硬编码色） ── */
-.herdr-tm {
-  position: relative;
-  width: 100%;
-  border-radius: 8px;
+/* 状态堆积条（dashboard workspace 卡片；段宽按 flex-grow=计数，最小 4px） */
+.herdr-dash-bar {
+  display: flex;
   overflow: hidden;
   background: var(--dsw-alias-bg-module-platform);
-  outline: none;
+  width: 100%; height: 16px;
+  border-radius: 8px;
 }
-.herdr-tm-block {
-  position: absolute;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  border: 1px solid var(--dsw-alias-bg-layer-1);
-  border-radius: 4px;
-  background: var(--dsw-alias-label-tertiary);
-  /* 可点击跳转（pane → 对应会话 Herdr Tab） */
-  cursor: pointer;
+.herdr-dash-bar-seg {
+  min-width: 4px; flex-shrink: 0;
 }
-.herdr-tm-block:hover,
-.herdr-tm-block:focus-visible {
-  filter: brightness(1.15);
-  outline: 2px solid var(--dsw-alias-state-focus-ring, var(--dsw-alias-state-info-primary));
-  outline-offset: 1px;
+.herdr-dash-bar-seg[data-state='working'] { background: var(--dsw-alias-state-business-primary); }
+.herdr-dash-bar-seg[data-state='blocked'] { background: var(--dsw-alias-state-error-primary); }
+.herdr-dash-bar-seg[data-state='idle'] { background: var(--dsw-alias-state-success-primary); }
+.herdr-dash-bar-seg[data-state='done'] { background: var(--dsw-alias-label-tertiary); }
+.herdr-dash-bar-seg[data-state='unknown'] { background: var(--dsw-alias-border-l2); }
+/* kind chips：复用 .herdr-dash-agent-dot 的 data-kind 颜色映射 */
+.herdr-dash-kind-chips {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 2px;
 }
-.herdr-tm-block:active { filter: brightness(0.9); }
-.herdr-tm-label {
-  font-family: var(--ds-font-family-code);
-  font-size: 10px; line-height: 14px;
-  color: var(--dsw-alias-bg-base);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  max-width: calc(100% - 4px);
-  pointer-events: none;
-}
-.herdr-tm-block[data-kind='codex'] { background: var(--dsw-alias-state-business-primary); }
-.herdr-tm-block[data-kind='pi'] { background: var(--dsw-alias-state-warn-primary); }
-.herdr-tm-block[data-kind='opencode'] { background: var(--dsw-alias-state-success-primary); }
-.herdr-tm-block[data-kind='claude'] { background: var(--dsw-alias-state-success-primary); }
-.herdr-tm-block[data-kind='dsh'] { background: var(--dsw-alias-label-tertiary); }
-.herdr-tm-block[data-kind='unknown'],
-.herdr-tm-block[data-kind='other'] { background: var(--dsw-alias-label-tertiary); }
-.herdr-tm-empty {
-  display: flex; align-items: center; justify-content: center;
-  height: 100%;
+.herdr-dash-kind-chip {
+  display: inline-flex; align-items: center; gap: 4px;
   font-size: 11px; line-height: 16px;
   color: var(--dsw-alias-label-tertiary);
+}
+.herdr-dash-kind-chip b {
+  font-weight: 600; font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-secondary);
 }
 /* ── Agents 全名称列表（v4 需求 4；长列表滚动 + 显示全部） ── */
 .herdr-dash-agent-list {
   list-style: none;
   margin: 0;
-  padding: 0;
+  /* 4px 水平内边距补偿可点击行的 hover 内缩（负 margin 会造成横向滚动条） */
+  padding: 0 4px;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 2px;
   max-height: 176px;
   overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: var(--dsw-alias-scrollbar-bg-l2) transparent;
 }
@@ -1380,8 +1363,22 @@ html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text[data-herdr-lang='
 }
 .herdr-dash-agent-status[data-state='working'] { color: var(--dsw-alias-state-business-primary); }
 .herdr-dash-agent-status[data-state='blocked'] { color: var(--dsw-alias-state-error-primary); }
-.herdr-dash-agent-status[data-state='done'],
+.herdr-dash-agent-status[data-state='done'] { color: var(--dsw-alias-label-tertiary); }
 .herdr-dash-agent-status[data-state='idle'] { color: var(--dsw-alias-state-success-primary); }
+/* 代理行可点击（仅当 onPaneClick 存在，role=button 条件渲染） */
+.herdr-dash-agent-row[role='button'] {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 1px 4px;
+  margin: 0;
+}
+.herdr-dash-agent-row[role='button']:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.herdr-dash-agent-row[role='button']:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-focus-ring, var(--dsw-alias-state-info-primary));
+  outline-offset: -1px;
+}
 .herdr-dash-link-btn {
   align-self: flex-start;
   border: none; background: none; padding: 2px 0;
@@ -1397,53 +1394,59 @@ html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text[data-herdr-lang='
 .herdr-dash-process-note {
   font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary);
 }
-/* 窄屏：workspace 卡片 meta 隐藏（避免横向溢出） */
+/* 窄屏：workspace 卡片 meta 隐藏（避免横向溢出）；header 新鲜度时间隐藏（保留刷新按钮） */
 @media (max-width: 720px) {
   .herdr-dash-ws-meta { display: none; }
+  .herdr-gds-fresh-time { display: none; }
 }
 @media (max-width: 480px) {
   .herdr-gds-head { align-items: flex-start; flex-wrap: wrap; padding: 6px 12px; }
   .herdr-gds-title { font-size: 13px; }
   .herdr-gds-state { flex: 1 0 100%; font-size: 11px; margin-left: 8px; }
-  .herdr-dash-fresh { align-items: flex-start; }
   .herdr-dash-last-error { flex: 1 0 100%; max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
-  .herdr-dash-actions { margin-left: 0; }
+}
+/* ── 加载骨架屏与空态（dashboard-redesign：loading 3 块脉冲卡片；空态 logo） ── */
+.herdr-dash-loading {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.herdr-dash-skeleton {
+  height: 96px;
+  border-radius: 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-1);
+  animation: herdr-state-pulse 1.4s var(--ds-ease-in-out) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .herdr-dash-skeleton { animation: none; }
+}
+.herdr-dash-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 28px 16px; text-align: center;
+  font-size: 12px; line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.herdr-dash-empty-logo {
+  width: 28px; height: 28px; display: block;
+  color: var(--dsw-alias-label-tertiary);
+}
+/* 视觉隐藏（loading 文案兜底，不占布局） */
+.herdr-visually-hidden {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 /* ── 五态 panel list 状态文本 token（pane-list 浮层共用） ─── */
 .pl-state[data-state=working] { color: var(--dsw-alias-state-business-primary); }
 .pl-state[data-state=blocked] { color: var(--dsw-alias-state-error-primary); }
 .pl-state[data-state=idle] { color: var(--dsw-alias-state-success-primary); }
-.pl-state[data-state=done] { color: var(--dsw-alias-state-success-primary); }
+/* done 与 idle 区分（done=中性灰；与 dashboard/herdr-tab 一致） */
+.pl-state[data-state=done] { color: var(--dsw-alias-label-tertiary); }
 .pl-state[data-state=unknown] { color: var(--dsw-alias-label-tertiary); }
 /* ── 减弱动效偏好：关闭 live pulse 和 pane flash ──── */
 @media (prefers-reduced-motion: reduce) {
   .herdr-log-live { animation: none; }
   .herdr-pane-flash { animation: none; }
 }
-/* ── workspace 折叠控件键盘 focus ──── */
-.herdr-ws-toggle:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-focus-ring, var(--dsw-alias-state-info-primary));
-  outline-offset: 1px;
-}
-/* ── Treemap 图例 ──── */
-.herdr-tm-legend {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 4px 0 2px;
-  font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary);
-}
-.herdr-tm-legend-item {
-  display: inline-flex; align-items: center; gap: 4px;
-}
-.herdr-tm-legend-dot {
-  width: 8px; height: 8px; border-radius: 2px; flex: none;
-  background: var(--dsw-alias-label-tertiary);
-}
-.herdr-tm-legend-dot[data-kind='codex'] { background: var(--dsw-alias-state-business-primary); }
-.herdr-tm-legend-dot[data-kind='pi'] { background: var(--dsw-alias-state-warn-primary); }
-.herdr-tm-legend-dot[data-kind='opencode'] { background: var(--dsw-alias-state-success-primary); }
-.herdr-tm-legend-dot[data-kind='claude'] { background: var(--dsw-alias-state-success-primary); }
-.herdr-tm-legend-dot[data-kind='dsh'],
-.herdr-tm-legend-dot[data-kind='unknown'] { background: var(--dsw-alias-label-tertiary); }
 
 /* ── 全局 Dashboard 入口与右侧工作区 surface（design: dashboard-global v3） ──
    按钮为 sidebar 文档流内的 marker（v3 不再有 fixed 悬浮按钮）；rail/wide 由
@@ -1625,8 +1628,23 @@ html[data-herdr-mode='1'] [data-phase='hero'] .herdr-hero-text[data-herdr-lang='
   height: 18px;
   display: block;
   flex: none;
-  color: var(--dsw-alias-state-business-primary);
+  color: var(--herdr-brand);
 }
+/* header 新鲜度组：最近更新 + 过期徽标 + 刷新按钮（状态组与 ✕ 之间，右对齐） */
+.herdr-gds-fresh {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  min-width: 0;
+  flex: none;
+  white-space: nowrap;
+}
+/* 新鲜度组存在时 ✕ 不再自行右推（组已右对齐） */
+.herdr-gds-fresh + .herdr-gds-close { margin-left: 0; }
 .herdr-gds-close {
   margin-left: auto;
   display: inline-flex;

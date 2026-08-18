@@ -1,90 +1,18 @@
-// Dashboard workspace 区（design: dashboard-global v4 需求 7 —— 外层 workspace 卡片
-// + 内部 agent-kind 矩形树图）。workspace 卡片（含头部）**不承载返回会话行为**——
-// 关闭 surface 由 header ✕ 按钮承担（用户定案：卡片空白区与头部点击都不返回）。
-// Treemap kind 块可点击——该 kind 在该 workspace 恰好 1 个 agent 时经 onPaneClick
-// 跳转到对应会话的 Herdr Tab pane；多个时经 onNotice 提示无法定位。
-// 布局纯函数在 client-logic（layoutTreemap/agentKindCounts）。
+// Dashboard workspace 区（design: dashboard-redesign —— 外层 workspace 卡片 +
+// 状态堆积条 + kind chips；替代 v4 的 agent-kind Treemap）。workspace 卡片（含头部）
+// **不承载返回会话行为**——关闭 surface 由 header ✕ 按钮承担。堆积条分段由
+// client-logic 的 stackedBarSegments 计算（规范顺序、比例守恒）。
+// 布局纯函数在 client-logic（stackedBarSegments/agentKindCounts）。
 
-import { useEffect, useRef, useState } from 'react'
-import { agentKindCounts, layoutTreemap, normalizeDashboardKind, normalizeDashboardKindCounts, paneDisplayState } from '../client-logic.ts'
+import { agentKindCounts, normalizeDashboardKind, normalizeDashboardKindCounts, paneDisplayState, stackedBarSegments } from '../client-logic.ts'
 import { t, useHerdrLang } from './i18n.ts'
-import { StatusChips } from './dashboard-summary.tsx'
-import type { HerdrDashboardAgent, HerdrDashboardSnapshot, HerdrDashboardWorkspace } from './dashboard-types.ts'
-
-/** Treemap 区块高度（固定；宽度随容器 ResizeObserver 重算）。 */
-const TREEMAP_HEIGHT = 110
+import { StatusChips, STATUS_LABEL_KEYS } from './dashboard-summary.tsx'
+import { HerdrLogo } from './pane-list.tsx'
+import type { HerdrDashboardSnapshot, HerdrDashboardWorkspace } from './dashboard-types.ts'
 
 function kindLabel(kind: string): string {
   const normalized = normalizeDashboardKind(kind)
   return normalized === 'unknown' ? t('dashboard.unknown') : normalized
-}
-
-/** 单个 workspace 的内部 Treemap（kind 计数 → 矩形布局；kind 块可点击跳转）。 */
-function WorkspaceTreemap({ ws, onPaneClick, onNotice }: {
-  ws: HerdrDashboardWorkspace
-  /** 点击 kind 块（该 kind 唯一 agent 时携带 agent）。 */
-  onPaneClick?: (agent: HerdrDashboardAgent) => void
-  /** 多 agent kind 块 / 无法定位时的提示。 */
-  onNotice?: (message: string) => void
-}) {
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const [width, setWidth] = useState(0)
-  // 响应式：容器宽度变化重算布局（P2-2；固定高度）
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const measure = () => setWidth(el.clientWidth)
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-  const kinds = normalizeDashboardKindCounts(agentKindCounts(ws.agents ?? [])).map(entry => ({
-    key: entry.kind,
-    value: entry.value,
-  }))
-  const rects = layoutTreemap(kinds, Math.max(0, width), TREEMAP_HEIGHT)
-  if (kinds.length === 0) {
-    return <div className="herdr-tm-empty">{t('dashboard.treemapEmpty')}</div>
-  }
-  // kind 块点击：唯一 agent → 跳转；多个 → 提示无法定位
-  const activateKind = (kind: string) => {
-    const agentsOfKind = (ws.agents ?? []).filter(agent => normalizeDashboardKind(agent.kind) === kind)
-    if (agentsOfKind.length === 1) {
-      onPaneClick?.(agentsOfKind[0])
-    } else if (agentsOfKind.length > 1) {
-      onNotice?.(t('dashboard.paneMultiple', { count: agentsOfKind.length }))
-    }
-  }
-  return (
-    <div ref={containerRef} className="herdr-tm" style={{ height: TREEMAP_HEIGHT }}>
-      {rects.map(r => (
-        <div
-          key={r.key}
-          className="herdr-tm-block"
-          data-kind={r.key}
-          role="button"
-          tabIndex={0}
-          aria-label={`${kindLabel(r.key)} · ${r.value} (${Math.round(r.ratio * 100)}%)`}
-          style={{ left: r.x, top: r.y, width: r.width, height: r.height }}
-          title={`${kindLabel(r.key)} · ${r.value} (${Math.round(r.ratio * 100)}%)`}
-          onClick={e => {
-            e.stopPropagation() // 块内点击不触发 workspace 卡片关闭
-            activateKind(r.key)
-          }}
-          onKeyDown={e => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault()
-              e.stopPropagation()
-              activateKind(r.key)
-            }
-          }}
-        >
-          <span className="herdr-tm-label" aria-hidden>{kindLabel(r.key)} · {r.value}</span>
-        </div>
-      ))}
-    </div>
-  )
 }
 
 function WorkspaceStatusChips({ ws }: { ws: HerdrDashboardWorkspace }) {
@@ -98,16 +26,57 @@ function WorkspaceStatusChips({ ws }: { ws: HerdrDashboardWorkspace }) {
   return <StatusChips counts={counts} />
 }
 
-export function DashboardWorkspaces({ snap, onPaneClick, onNotice }: {
+/** 单个 workspace 卡片：两行头部 + 状态堆积条（role=img aria-label 汇总）+ kind chips。 */
+function WorkspaceCard({ ws }: { ws: HerdrDashboardWorkspace }) {
+  const segments = stackedBarSegments((ws.agents ?? []).map(agent => agent.status))
+  const kindCounts = normalizeDashboardKindCounts(agentKindCounts(ws.agents ?? []))
+  const label = ws.label ?? ws.workspace_id
+  const barLabel = segments.map(seg => `${t(STATUS_LABEL_KEYS[seg.state])} ${seg.count}`).join(' · ')
+  return (
+    <div className="herdr-dash-ws herdr-dash-ws-card">
+      <div className="herdr-dash-ws-head">
+        <div className="herdr-dash-ws-line1">
+          <span className="herdr-dash-ws-label" title={label}>{label}</span>
+          <WorkspaceStatusChips ws={ws} />
+        </div>
+        <div className="herdr-dash-ws-line2">
+          <span className="herdr-dash-ws-id">{ws.workspace_id}</span>
+          {ws.checkout_path_base ? (
+            <span className="herdr-dash-ws-meta" title={ws.checkout_path_base}>{ws.checkout_path_base}</span>
+          ) : null}
+        </div>
+      </div>
+      <div className="herdr-dash-bar" role="img" aria-label={segments.length > 0 ? `${label}: ${barLabel}` : label}>
+        {segments.map(seg => (
+          <span key={seg.state} className="herdr-dash-bar-seg" data-state={seg.state} style={{ flexGrow: seg.count }} />
+        ))}
+      </div>
+      {kindCounts.length > 0 ? (
+        <div className="herdr-dash-kind-chips">
+          {kindCounts.map(kind => (
+            <span key={kind.kind} className="herdr-dash-kind-chip">
+              <span className="herdr-dash-agent-dot" data-kind={kind.kind} aria-hidden />
+              <span>{kindLabel(kind.kind)}</span>
+              <b>{kind.value}</b>
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+export function DashboardWorkspaces({ snap }: {
   snap: HerdrDashboardSnapshot
-  /** 点击 Treemap kind 块（该 kind 唯一 agent 时跳转）。 */
-  onPaneClick?: (agent: HerdrDashboardAgent) => void
-  /** 无法定位/多 agent 提示。 */
-  onNotice?: (message: string) => void
 }) {
   void useHerdrLang()
   if (snap.workspaces.length === 0) {
-    return <div className="herdr-empty">{t('dashboard.empty')}</div>
+    return (
+      <div className="herdr-dash-empty">
+        <HerdrLogo className="herdr-dash-empty-logo" />
+        <div>{t('dashboard.empty')}</div>
+      </div>
+    )
   }
   return (
     <section className="herdr-dash-section">
@@ -117,35 +86,9 @@ export function DashboardWorkspaces({ snap, onPaneClick, onNotice }: {
           {snap.summary.workspaces} {t('dashboard.workspaces')} · {snap.summary.panes} {t('dashboard.panes')} · {snap.summary.tabs} {t('dashboard.tabs')}
         </span>
       </div>
-      <div>
+      <div className="herdr-dash-ws-grid">
         {snap.workspaces.map(ws => (
-          <div key={ws.workspace_id} className="herdr-dash-ws herdr-dash-ws-card">
-            <div className="herdr-dash-ws-head">
-              <span className="herdr-dash-ws-label">{ws.label ?? ws.workspace_id}</span>
-              <span className="herdr-dash-ws-id">{ws.workspace_id}</span>
-              {ws.checkout_path_base ? (
-                <span className="herdr-dash-ws-meta" title={t('dashboard.checkoutBase')}>{ws.checkout_path_base}</span>
-              ) : null}
-              <span className="herdr-dash-ws-meta">
-                {ws.agent_count} {t('dashboard.agents')} · {ws.pane_count} {t('dashboard.panes')}
-              </span>
-            </div>
-            <WorkspaceTreemap ws={ws} onPaneClick={onPaneClick} onNotice={onNotice} />
-            {/* Treemap 图例：kind → 颜色映射 */}
-            {(ws.agents ?? []).length > 0 ? (
-              <div className="herdr-tm-legend">
-                <span>{t('dashboard.legend')}:</span>
-                {[...new Set((ws.agents ?? []).map(agent => normalizeDashboardKind(agent.kind)))].map(kind => (
-                  <span key={kind} className="herdr-tm-legend-item">
-                    <span className="herdr-tm-legend-dot" data-kind={kind} />
-                    <span>{kindLabel(kind)}</span>
-                  </span>
-                ))}
-              </div>
-            ) : null}
-            {/* workspace 状态 chips：显示所有非零状态（P2-6 一致性修复） */}
-            <WorkspaceStatusChips ws={ws} />
-          </div>
+          <WorkspaceCard key={ws.workspace_id} ws={ws} />
         ))}
       </div>
     </section>
