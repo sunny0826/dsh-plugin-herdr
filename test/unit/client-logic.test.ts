@@ -34,6 +34,7 @@ import {
   reorderPanes,
   savePaneOrder,
   shouldAutoExpand,
+  stackedBarSegments,
   statusSortPriority,
   stripAnsi,
   terminalFocusTransition,
@@ -79,6 +80,36 @@ test('paneDisplayState: normalizes protocol status to 5-state display model', ()
   assert.equal(paneDisplayState(undefined), 'unknown')
   assert.equal(paneDisplayState(''), 'unknown')
   assert.equal(paneDisplayState('random-status'), 'unknown')
+})
+
+// ---------------------------------------------------------------------------
+// 状态堆积条（design: dashboard-redesign §4 —— 替代 Treemap）
+// ---------------------------------------------------------------------------
+
+test('stackedBarSegments: aggregates in canonical order with ratios summing to 1', () => {
+  const segments = stackedBarSegments(['working', 'working', 'blocked', 'idle', 'done', 'idle'])
+  assert.deepEqual(segments.map(s => s.state), ['working', 'blocked', 'idle', 'done'])
+  assert.deepEqual(segments.map(s => s.count), [2, 1, 2, 1])
+  const total = segments.reduce((n, s) => n + s.ratio, 0)
+  assert.ok(Math.abs(total - 1) < 1e-9, `ratios sum to 1, got ${total}`)
+  // 规范顺序与计数比例一致（working 2/6）
+  assert.ok(Math.abs(segments[0].ratio - 2 / 6) < 1e-9)
+})
+
+test('stackedBarSegments: empty input returns empty array', () => {
+  assert.deepEqual(stackedBarSegments([]), [])
+})
+
+test('stackedBarSegments: unknown/empty/unrecognized statuses map to unknown (last position)', () => {
+  const segments = stackedBarSegments(['working', '', 'weird-status', 'done'])
+  assert.deepEqual(segments.map(s => s.state), ['working', 'done', 'unknown'])
+  assert.deepEqual(segments.map(s => s.count), [1, 1, 2], 'empty + weird both count as unknown')
+})
+
+test('stackedBarSegments: zero counts are dropped, single state works', () => {
+  assert.deepEqual(stackedBarSegments(['idle', 'idle', 'idle']), [
+    { state: 'idle', count: 3, ratio: 1 },
+  ])
 })
 
 test('statusSortPriority: blocked highest, unknown lowest', () => {

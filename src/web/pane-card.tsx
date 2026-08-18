@@ -4,13 +4,12 @@
 // 移除：open/onToggle/disclosure/expand/copy footer
 // 新增：maximize 按钮、PaneTerminal
 
-import { useCallback, useId, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useRef, useState, type DragEvent } from 'react'
 import { Pill, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   agentTheme,
   ariaStateLabel,
   dotState,
-  formatTime,
   paneDisplayState,
   validateLabel,
   focusBeforeRemoval,
@@ -63,7 +62,6 @@ export function PaneCard({
   const displayState = paneDisplayState(status)
   const stateLabel = t(ariaStateLabel(displayState))
   const muted = displayState === 'unknown'
-  const cwd = pane.cwd ?? pane.foreground_cwd ?? ''
 
   // ── 关闭确认 ──────────────────────────────────────────────
   const [confirmClose, setConfirmClose] = useState(false)
@@ -155,6 +153,7 @@ export function PaneCard({
             {displayName(pane)}
           </span>
         )}
+        {self ? <span className="herdr-pcard-self-tag">{t('panel.selfTag')}</span> : null}
         {agent ? (
           <Pill className="herdr-agent-pill">
             <span className="herdr-agent-name">{agent.agent}</span>
@@ -201,8 +200,6 @@ export function PaneCard({
           ) : null}
         </span>
       </header>
-
-      {cwd ? <div className="herdr-pcard-meta"><span className="herdr-pcard-cwd-path">{cwd}</span></div> : null}
 
       <PaneTerminal
         paneId={pane.pane_id}

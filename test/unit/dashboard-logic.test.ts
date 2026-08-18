@@ -13,7 +13,6 @@ import {
   deriveStale,
   formatBytes,
   formatDuration,
-  layoutTreemap,
   normalizeAgentKind,
   pathBase,
   shouldProbeNow,
@@ -234,37 +233,6 @@ test('agentKindCounts: kind → count, descending by count then kind', () => {
     { kind: 'unknown', value: 1 },
   ])
   assert.deepEqual(agentKindCounts([]), [])
-})
-
-test('layoutTreemap: area conservation, no negative sizes, stable order', () => {
-  const rects = layoutTreemap([
-    { key: 'codex', value: 4 },
-    { key: 'pi', value: 2 },
-    { key: 'unknown', value: 1 },
-  ], 300, 110)
-  assert.equal(rects.length, 3)
-  const totalArea = rects.reduce((n, r) => n + r.width * r.height, 0)
-  assert.ok(Math.abs(totalArea - 300 * 110) < 0.01, '面积守恒（Σ块面积 ≈ 容器面积）')
-  for (const r of rects) {
-    assert.ok(r.width > 0 && r.height > 0, '无负/零尺寸')
-    assert.ok(r.ratio > 0 && r.ratio <= 1)
-  }
-  // 面积比例与计数一致（codex 占 4/7）
-  const codex = rects.find(r => r.key === 'codex')!
-  assert.ok(Math.abs(codex.width * codex.height / (300 * 110) - 4 / 7) < 0.01)
-})
-
-test('layoutTreemap: empty / zero-total / single item / extreme sizes', () => {
-  assert.deepEqual(layoutTreemap([], 100, 100), [])
-  assert.deepEqual(layoutTreemap([{ key: 'a', value: 0 }, { key: 'b', value: -1 }], 100, 100), [], '全零/负值 → 空')
-  assert.deepEqual(layoutTreemap([{ key: 'a', value: 3 }], 0, 100), [], '零宽 → 空')
-  const single = layoutTreemap([{ key: 'a', value: 3 }], 200, 100)
-  assert.equal(single.length, 1)
-  assert.deepEqual({ x: single[0].x, y: single[0].y, width: single[0].width, height: single[0].height }, { x: 0, y: 0, width: 200, height: 100 }, '单块占满')
-  // 极端长宽比不崩溃
-  const extreme = layoutTreemap([{ key: 'a', value: 100 }, { key: 'b', value: 1 }], 400, 30)
-  assert.equal(extreme.length, 2)
-  assert.ok(extreme.every(r => r.width > 0 && r.height > 0))
 })
 
 test('deriveMarkerServerState: running/stopped/not-installed/checking matrix', () => {

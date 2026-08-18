@@ -126,6 +126,9 @@ export const I18N_KEYS = {
   'dashboard.reason': { zh: '原因', en: 'Reason' },
   'dashboard.unavailable': { zh: '不可用', en: 'Unavailable' },
   'dashboard.bestEffort': { zh: '尽力采集', en: 'Best effort' },
+  // ── Dashboard 重设计（design: dashboard-redesign —— 服务与环境合并卡 + KPI 条） ──
+  'dashboard.env': { zh: '服务与环境', en: 'Server & environment' },
+  'dashboard.details': { zh: '详情', en: 'Details' },
   // ── 全局 Dashboard 入口与面板（design: dashboard-global §5.2/§7） ──────
   'global.title': { zh: 'Herdr 仪表盘', en: 'Herdr Dashboard' },
   'global.close': { zh: '关闭', en: 'Close' },
@@ -134,7 +137,6 @@ export const I18N_KEYS = {
   'global.stateStopped': { zh: '已停止', en: 'Stopped' },
   'global.stateNotInstalled': { zh: '未安装', en: 'Not installed' },
   'global.stateChecking': { zh: '检查中', en: 'Checking' },
-  'dashboard.treemapEmpty': { zh: '该工作区暂无代理', en: 'No agents in this workspace' },
   'dashboard.showAllAgents': { zh: '显示全部', en: 'Show all' },
   'dashboard.collapseAgents': { zh: '收起', en: 'Collapse' },
   'dashboard.agentUnnamed': { zh: '未命名代理', en: 'Unnamed agent' },
@@ -182,8 +184,6 @@ export const I18N_KEYS = {
   // ── 展开/收起日志按钮 ────────────────────────────────────────────
   'pane.expandLog': { zh: '展开日志', en: 'Expand log' },
   'pane.collapseLog': { zh: '收起日志', en: 'Collapse log' },
-  // ── Dashboard treemap 图例 ──────────────────────────────────────────
-  'dashboard.legend': { zh: '图例', en: 'Legend' },
   'dashboard.checkoutBase': { zh: '检出目录', en: 'Checkout' },
 } as const
 

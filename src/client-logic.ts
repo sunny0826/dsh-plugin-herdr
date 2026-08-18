@@ -995,80 +995,36 @@ export function derivePaneNavState(
 }
 
 // ---------------------------------------------------------------------------
-// workspace agent kind Treemap（v4 需求 7：外层 workspace 卡片 + 内部 kind 矩形）。
-// 纯函数：kind 计数 + 矩形布局（简化 squarify）；面积守恒、无负尺寸、排序稳定。
+// workspace 状态堆积条（design: dashboard-redesign §4 —— 替代 agent-kind Treemap）。
+// 纯函数：每个 agent 状态经 paneDisplayState 归一 → 规范顺序聚合（working → blocked
+// → idle → done → unknown），丢弃 0 计数；ratio 为该段占全部 agent 的比例（合计 1）。
 // ---------------------------------------------------------------------------
 
-export interface TreemapItem {
-  key: string
-  value: number
-}
-
-export interface TreemapRect {
-  key: string
-  value: number
-  x: number
-  y: number
-  width: number
-  height: number
-  /** 占 workspace agent 总数的比例（0..1；tooltip 展示用）。 */
+export interface StackedBarSegment {
+  state: PaneDisplayState
+  count: number
+  /** 占全部 agent 的比例（0..1；各段合计 ≈1）。 */
   ratio: number
 }
 
-/**
- * 矩形树图布局（简化 squarify）：按 value 降序，贪心把块加入一行直到行内最差
- * 宽高比恶化再换行；行沿区域最长边方向铺排。处理 total=0/空输入/单块/极端比例。
- * 不读取 DOM、不依赖 React。
- */
-export function layoutTreemap(items: ReadonlyArray<TreemapItem>, width: number, height: number): TreemapRect[] {
-  const positive = items.filter(i => Number.isFinite(i.value) && i.value > 0)
-  if (positive.length === 0 || width <= 0 || height <= 0) return []
-  const sorted = [...positive].sort((a, b) => b.value - a.value || a.key.localeCompare(b.key))
-  const out: TreemapRect[] = []
-  const stack: Array<{ x: number; y: number; w: number; h: number; items: TreemapItem[] }> = [
-    { x: 0, y: 0, w: width, h: height, items: sorted },
-  ]
-  while (stack.length > 0) {
-    const region = stack.pop()!
-    const { x, y, w, h, items } = region
-    if (items.length === 0 || w <= 0 || h <= 0) continue
-    const total = items.reduce((s, it) => s + it.value, 0)
-    if (total <= 0) continue
-    const horizontal = w >= h
-    const main = horizontal ? w : h
-    const side = horizontal ? h : w
-    const worst = (n: number): number => {
-      const sum = items.slice(0, n).reduce((s, it) => s + it.value, 0)
-      if (sum <= 0) return Number.POSITIVE_INFINITY
-      const thick = side * sum / total
-      let worstVal = 0
-      for (const it of items.slice(0, n)) {
-        const len = main * it.value / sum
-        worstVal = Math.max(worstVal, Math.max(len / thick, thick / len))
-      }
-      return worstVal
-    }
-    let rowLen = 1
-    while (rowLen < items.length && worst(rowLen + 1) <= worst(rowLen)) rowLen++
-    const row = items.slice(0, rowLen)
-    const sum = row.reduce((s, it) => s + it.value, 0)
-    const rowThick = side * sum / total
-    let cursor = 0
-    for (const it of row) {
-      const len = main * it.value / sum
-      out.push(horizontal
-        ? { key: it.key, value: it.value, x: x + cursor, y, width: len, height: rowThick, ratio: it.value / total }
-        : { key: it.key, value: it.value, x, y: y + cursor, width: rowThick, height: len, ratio: it.value / total })
-      cursor += len
-    }
-    const rest = items.slice(rowLen)
-    if (rest.length > 0) {
-      stack.push(horizontal
-        ? { x, y: y + rowThick, w, h: h - rowThick, items: rest }
-        : { x: x + rowThick, y, w: w - rowThick, h, items: rest })
-    }
+const STACKED_BAR_ORDER: readonly PaneDisplayState[] = ['working', 'blocked', 'idle', 'done', 'unknown']
+
+/** 状态堆积条分段：输入 agent 状态数组，输出规范顺序、非零计数、比例守恒的分段。 */
+export function stackedBarSegments(statuses: ReadonlyArray<string | undefined>): StackedBarSegment[] {
+  const counts = new Map<PaneDisplayState, number>()
+  for (const s of statuses) {
+    const state = paneDisplayState(s)
+    counts.set(state, (counts.get(state) ?? 0) + 1)
   }
-  return out
+  const total = statuses.length
+  if (total === 0) return []
+  const segments: StackedBarSegment[] = []
+  for (const state of STACKED_BAR_ORDER) {
+    const count = counts.get(state) ?? 0
+    if (count === 0) continue
+    segments.push({ state, count, ratio: count / total })
+  }
+  return segments
 }
 
 // ---------------------------------------------------------------------------
