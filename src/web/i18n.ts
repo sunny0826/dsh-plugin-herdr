@@ -191,6 +191,10 @@ export const I18N_KEYS = {
   'dashboard.collapsePanes': { zh: '收起窗格', en: 'Collapse panes' },
   'dashboard.paneJumpTitle': { zh: '{id} · 点击跳转到所属会话', en: '{id} · Click to jump to its session' },
   'dashboard.paneSelfTitle': { zh: '{id}（本对话）· 在 Herdr 中定位', en: '{id} (this conversation) · Locate in Herdr' },
+  'panel.viewerTitle': { zh: '{id} · 只读预览', en: '{id} · Read-only preview' },
+  'panel.viewerClose': { zh: '返回列表', en: 'Back to list' },
+  'panel.viewerSelfDisabled': { zh: '本对话窗格不可预览', en: 'This conversation pane cannot be previewed' },
+  'panel.viewerClosed': { zh: '窗格已关闭', en: 'Pane closed' },
 } as const
 
 export type I18nKey = keyof typeof I18N_KEYS
