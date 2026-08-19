@@ -237,8 +237,8 @@ herdr 模式):
   "展开" gives an independently scrolling log that auto-follows a working agent
   and offers "复制" (full output).
 - **Rename**: ✎ or double-click turns the pane/workspace name into an inline
-  input (≤64 chars); clearing the pane name removes it (falls back to title).
-  Renames are persisted by herdr server.
+  input (≤64 chars); clearing the pane name removes it (falls back to the
+  agent name, then the title). Renames are persisted by herdr server.
 - **Close**: ✕ (hover) opens a confirm dialog; a workspace close shows its pane
   count. The dialog and the server both refuse closing the pane that hosts the
   current session (self-pane).

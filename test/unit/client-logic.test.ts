@@ -1107,7 +1107,7 @@ test('replayTerminalSnapshot: backspace moves cursor back and overwrites', () =>
   assert.equal(s.cursor.column, 3) // cursor at col 3
 })
 
-test('paneDisplayName: fallback chain label > title > terminal_title_stripped > display_agent > agent 名 > pane_id', () => {
+test('paneDisplayName: fallback chain label > agent 名 > title > terminal_title_stripped > display_agent > agent > pane_id', () => {
   const pane = (label?: string, title?: string, tts?: string, da?: string): HerdrPaneView => ({
     pane_id: 'w1:p1',
     workspace_id: 'w1',
@@ -1116,14 +1116,17 @@ test('paneDisplayName: fallback chain label > title > terminal_title_stripped > 
   })
   const agent = (name?: string, agentName?: string) => ({ name, agent: agentName }) as never
   assert.equal(paneDisplayName(pane('我的 pane'), undefined), '我的 pane')
+  // agent 名（herdr 给 agent 的 <kind>-<purpose>）优先于 title/终端标题
+  assert.equal(paneDisplayName(pane(undefined, 'title'), agent('pi-code-review', 'pi-1')), 'pi-code-review')
+  assert.equal(paneDisplayName(pane(undefined, undefined, 'stripped'), agent('pi-code-review', 'pi-1')), 'pi-code-review')
   assert.equal(paneDisplayName(pane(undefined, 'title'), undefined), 'title')
   assert.equal(paneDisplayName(pane(undefined, undefined, 'stripped'), undefined), 'stripped')
   assert.equal(paneDisplayName(pane(undefined, undefined, undefined, 'pi-1'), undefined), 'pi-1')
   assert.equal(paneDisplayName(pane(), agent(undefined, 'pi-1')), 'pi-1')
   assert.equal(paneDisplayName(pane(), agent('pi-task', 'pi-1')), 'pi-task')
   assert.equal(paneDisplayName(pane(), undefined), 'w1:p1')
-  // label 优先于 title（重命名后展示用户名字）
-  assert.equal(paneDisplayName(pane('用户改名', 'title'), undefined), '用户改名')
+  // label 优先于 agent 名（重命名后展示用户名字）
+  assert.equal(paneDisplayName(pane('用户改名', 'title'), agent('pi-code-review', 'pi-1')), '用户改名')
 })
 
 test('isDshPane: agent 为 dsh 或 label 以 dsh: 开头判为插件自身 pane', () => {

@@ -197,7 +197,7 @@ herdr_pane_read    {pane_id: '<pane_id>'}              # 读取结果
 - **日志预览/展开**：卡片正文显示最近输出（渐隐）；「展开」提供独立滚动
   日志，自动跟随 working 的 agent，可「复制」完整输出。
 - **重命名**：✎ 或双击进入行内编辑（≤64 字符）；清空 pane 名称即移除
-  （回退到标题）。重命名由 herdr server 持久化。
+  （回退到 agent 名，无则回退标题）。重命名由 herdr server 持久化。
 - **关闭**：✕（hover 显示）弹出确认对话框；关闭 workspace 时显示其 pane
   数。对话框与服务端都会拒绝关闭承载当前会话的 pane（self-pane）。
 - **Herdr Tab logo**：Tab 以 herdr logo（CSS mask、随主题取色）替代文字。

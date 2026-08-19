@@ -31,14 +31,14 @@ export function comparePaneId(a: string, b: string): number {
   return na - nb
 }
 
-/** pane 显示名回退链：label > title（terminal_title 合并）> terminal_title_stripped > display_agent > agent 名 > pane_id。 */
+/** pane 显示名回退链：label > agent 名（herdr 给 agent 的 <kind>-<purpose>）> title > terminal_title_stripped > display_agent > agent > pane_id。 */
 export function paneDisplayName(pane: HerdrPaneView, agent?: HerdrAgentStatus | undefined): string {
   return (
     pane.label
+    ?? agent?.name
     ?? pane.title
     ?? pane.terminal_title_stripped
     ?? pane.display_agent
-    ?? agent?.name
     ?? agent?.agent
     ?? pane.pane_id
   )
