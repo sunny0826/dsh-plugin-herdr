@@ -2,7 +2,7 @@
 // 本文件是 Web 面板装配层，不包含组件/数据/样式逻辑本身。
 
 import { HerdrView, HerdrHeaderPill } from './herdr-view.tsx'
-import { setSessionIdReader } from './navigation.ts'
+import { setSessionIdReader, setSessionOpener } from './navigation.ts'
 import { HerdrPaneList } from './pane-list.tsx'
 import { startModeTracking, type SessionListLike } from './mode.ts'
 import { startTabController } from './tab-controller.ts'
@@ -27,12 +27,21 @@ export interface ClientCtx {
   effect(fn: () => unknown): unknown
 }
 
+/** sessions 服务的最小形状（list 读面 + open 会话切换写面）。 */
+interface SessionsApiLike {
+  list?: SessionListLike
+  open?: (id: string) => void
+}
+
 export function apply(ctx: ClientCtx) {
   // 模式跟踪：当前会话 agentPreset === 'herdr' → herdr 模式（Tab/面板/胶囊门控的事实源）
   let stopModeTracking: (() => void) | null = null
   ctx.inject(['sessions'], (scope: unknown) => {
-    const sessions = (scope as { sessions?: { list?: SessionListLike } }).sessions
+    const sessions = (scope as { sessions?: SessionsApiLike }).sessions
     setSessionIdReader(() => sessions?.list?.getSnapshot?.()?.current)
+    if (sessions?.open) {
+      setSessionOpener(id => sessions.open!(id))
+    }
     if (sessions?.list) {
       stopModeTracking = startModeTracking(sessions.list)
     }

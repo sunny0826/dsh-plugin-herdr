@@ -14,8 +14,9 @@ import {
   type TerminalBootstrapResult,
 } from './store.ts'
 import { terminalSessionStore, type TerminalStoreSignal } from './terminal-session.ts'
-import { trimAnsiSnapshotPadding } from '../terminal-ansi.ts'
+import { rebaseTerminalFrame, trimAnsiSnapshotPadding } from '../terminal-ansi.ts'
 import { t, useHerdrLang } from './i18n.ts'
+import { resolveTerminalFontFamily } from './terminal-font.ts'
 
 // —— 终端主题：随 DSH 界面亮暗切换（用户指定 Ghostty 主题）——
 // 暗模式：Cyberdream（cyberdream.nvim 官方 extras/ghostty/cyberdream）
@@ -131,7 +132,8 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
     const terminal = new Terminal({
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: 'var(--ds-font-family-code, monospace)',
+      // xterm canvas 不会解析 CSS var()；先经 DOM 解析再传入具体字体族。
+      fontFamily: resolveTerminalFontFamily(host),
       lineHeight: 1.2,
       scrollback: 5000,
       theme: computeXtermTheme(),
@@ -186,12 +188,15 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
     let snapshotStarted = false
     let historyReady = false
     let historySeeded = false
-    const pendingFrames: Array<{ bytesArr: Uint8Array; seq: number }> = []
-    const flushFrames = (): void => {
+    const pendingFrames: Array<{ bytesArr: Uint8Array; seq: number; full: boolean }> = []
+    const writeFrame = (frame: { bytesArr: Uint8Array; seq: number; full: boolean }): void => {
       const t = terminalRef.current
       if (!t) return
+      t.write(rebaseTerminalFrame(frame.bytesArr, frame.full), () => terminalSessionStore.confirmFrame(paneId, frame.seq))
+    }
+    const flushFrames = (): void => {
       for (const f of pendingFrames.splice(0)) {
-        t.write(f.bytesArr, () => terminalSessionStore.confirmFrame(paneId, f.seq))
+        writeFrame(f)
       }
     }
 
@@ -269,7 +274,7 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
         const raw = atob(sig.bytes)
         const bytesArr = Uint8Array.from(raw, c => c.charCodeAt(0))
         if (historyReady) {
-          terminal.write(bytesArr, () => terminalSessionStore.confirmFrame(paneId, sig.seq))
+          writeFrame({ bytesArr, seq: sig.seq, full: sig.full })
           return
         }
         // 历史预填充就绪前缓存帧；首个 full 帧触发拉历史（recent_unwrapped 快照按行
@@ -292,7 +297,7 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
               flushFrames()
             })
         }
-        pendingFrames.push({ bytesArr, seq: sig.seq })
+        pendingFrames.push({ bytesArr, seq: sig.seq, full: sig.full })
         return
       } else if (sig.status === 'observing') {
         observerSucceeded = true

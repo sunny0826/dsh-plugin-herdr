@@ -18,6 +18,13 @@ import {
   type GlobalDashboardStore,
 } from '../../src/client-logic.ts'
 import { I18N_KEYS } from '../../src/web/i18n.ts'
+import {
+  getPendingFocusPane,
+  navigateToPane,
+  openSession,
+  setPendingFocusPane,
+  setSessionOpener,
+} from '../../src/web/navigation.ts'
 
 function makeStore(): { store: GlobalDashboardStore; calls: number[] } {
   const store = createGlobalDashboardStore()
@@ -169,4 +176,46 @@ test('global.* copy: marker button and surface labels are bilingual', () => {
   }
   assert.equal(keys.title.zh, 'Herdr 仪表盘')
   assert.equal(keys.title.en, 'Herdr Dashboard')
+})
+
+test('session opener: openSession forwards to the injected sessions.open (cross-session nav)', () => {
+  const calls: string[] = []
+  setSessionOpener(id => calls.push(id))
+  openSession('session-a')
+  openSession('session-b')
+  assert.deepEqual(calls, ['session-a', 'session-b'])
+})
+
+// ── pane 跳转（v5）：unbound pane 也应在当前会话 Herdr Tab 中尽力定位 ──────────
+// （fix：点击已完成的 pane 不再提示「未绑定会话、无法跳转」——pane 属于当前
+// herdr server，关闭面板并定位；跨 workspace 时定位是 no-op，落在 Herdr Tab。）
+
+/** 最小 document 桩：tab 查询为空（不真正点击），仅记录 focus 事件广播。 */
+function withDocumentStub<T>(fn: () => T): T {
+  const dispatched: unknown[] = []
+  const origDoc = globalThis.document
+  const origElement = globalThis.HTMLElement
+  class DummyElement {}
+  globalThis.HTMLElement = DummyElement as unknown as typeof HTMLElement
+  globalThis.document = {
+    querySelectorAll: () => [],
+    dispatchEvent: (e: unknown) => { dispatched.push(e) },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  } as unknown as Document
+  try {
+    return fn()
+  } finally {
+    globalThis.document = origDoc
+    globalThis.HTMLElement = origElement
+  }
+}
+
+test('navigateToPane: unbound pane sets pending focus and broadcasts (jump, not notice)', () => {
+  withDocumentStub(() => {
+    setPendingFocusPane(null)
+    const state = navigateToPane('w1:p3', { selfSessionId: 'sess-a', paneSessionId: null })
+    assert.equal(state, 'unbound', '归属仍判定为 unbound')
+    assert.equal(getPendingFocusPane(), 'w1:p3', 'unbound pane 也设置待定位 pane（Herdr Tab 挂载时消费）')
+  })
 })

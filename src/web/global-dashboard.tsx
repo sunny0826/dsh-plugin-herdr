@@ -11,7 +11,6 @@ import {
   computeGlobalSurfaceBounds,
   deriveMarkerPressed,
   deriveMarkerServerState,
-  derivePaneNavState,
   formatTime,
   isSidebarRail,
   NEW_SESSION_SELECTORS,
@@ -32,11 +31,11 @@ import {
   useHerdrStart,
 } from './store.ts'
 import { useGlobalDashboardAvailable } from './mode.ts'
-import { focusPaneInHerdrTab, getSessionId } from './navigation.ts'
-import { fetchPaneSession } from './session-pane.ts'
+import { getSessionId, navigateToPane } from './navigation.ts'
+import { fetchPaneSession, fetchSelfPaneId } from './session-pane.ts'
 import { DashboardContent } from './dashboard-view.tsx'
 import { HerdrLogo } from './pane-list.tsx'
-import type { HerdrDashboardAgent } from './dashboard-types.ts'
+import type { HerdrDashboardPaneRef } from './dashboard-types.ts'
 
 // ---------------------------------------------------------------------------
 // DOM 查询（controller 与 surface 共用）
@@ -315,11 +314,12 @@ export function GlobalDashboardSurface() {
     panelRef.current?.focus()
   }, [])
 
-  // v4 交互：Treemap kind 块点击 → pane 跳转。反查 pane 归属（/herdr-pane-session），
-  // 属于当前会话 → 关闭 surface 并在 Herdr Tab 中聚焦该 pane；其他会话/无归属 →
-  // 保持面板打开并显示内联提示（用户定案：不关闭、不跨会话导航）。
-  // 注：workspace 卡片（含头部）不再承载「返回当前会话」——返回由 header ✕ 关闭
-  // 按钮承担（用户两轮反馈：卡片空白区与头部点击都不应返回）。
+  // v5 交互：pane 点击跳转（含跨会话切换）。反查 pane 归属（/herdr-pane-session）：
+  // self → 关闭 surface 并在本会话 Herdr Tab 定位；foreign → 关闭 surface 并切换到
+  // 该 pane 所属会话（sessions.open）+ 延迟定位；unbound → 关闭 surface 并在本会话
+  // Herdr Tab 尽力定位（pane 属于当前 herdr server，通常在本会话 workspace 内；
+  // 跨 workspace 时定位 no-op，落在 Herdr Tab）。
+  // 注：workspace 卡片（含头部）不承载「返回当前会话」——返回由 header ✕ 关闭按钮承担。
   const [notice, setNotice] = useState<string | null>(null)
   const noticeTimer = useRef<number | undefined>(undefined)
   const showNotice = (message: string) => {
@@ -330,16 +330,69 @@ export function GlobalDashboardSurface() {
   useEffect(() => {
     return () => window.clearTimeout(noticeTimer.current)
   }, [])
-  const onPaneClick = (agent: HerdrDashboardAgent) => {
-    const sid = getSessionId()
-    void fetchPaneSession(agent.pane_id).then(paneSessionId => {
-      const state = derivePaneNavState(sid, paneSessionId)
-      if (state === 'self') {
-        closeGlobalDashboard()
-        focusPaneInHerdrTab(agent.pane_id)
-      } else {
-        showNotice(state === 'unbound' ? t('dashboard.paneUnbound') : t('dashboard.paneForeign'))
+
+  // 本会话绑定 pane（self-pane）：用于隐藏 ✕（自 pane/自 workspace 由服务端兜底拒绝）。
+  const [selfPaneId, setSelfPaneId] = useState<string | null>(null)
+  const selfPaneIdRef = useRef<string | null>(null)
+  const lastSessionId = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const id = getSessionId()
+      if (id !== lastSessionId.current) {
+        lastSessionId.current = id
+        setSelfPaneId(null)
+        selfPaneIdRef.current = null
+        return
       }
+      if (!id || selfPaneIdRef.current) return
+      void fetchSelfPaneId(id).then(paneId => {
+        setSelfPaneId(paneId)
+        if (paneId) selfPaneIdRef.current = paneId
+      })
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  // 关闭（workspace / pane）：乐观隐藏 + POST /herdr-close + 失败回滚 + 错误横幅 + refresh
+  const [hiddenWorkspaceIds, setHiddenWorkspaceIds] = useState<Set<string>>(new Set())
+  const [hiddenPaneIds, setHiddenPaneIds] = useState<Set<string>>(new Set())
+  const [actionError, setActionError] = useState<{ message: string; key: number } | null>(null)
+  const showErr = (message: string) => setActionError(prev => ({ message, key: (prev?.key ?? 0) + 1 }))
+  const postClose = async (kind: 'workspace' | 'pane', id: string): Promise<void> => {
+    if (kind === 'workspace') setHiddenWorkspaceIds(prev => new Set(prev).add(id))
+    else setHiddenPaneIds(prev => new Set(prev).add(id))
+    try {
+      const resp = await fetch('/herdr-close', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind, id }),
+      })
+      const body = (await resp.json()) as { ok?: boolean; error?: string }
+      if (!body.ok) throw new Error(body.error ?? `herdr-close HTTP ${resp.status}`)
+      refreshDash()
+    } catch (e) {
+      if (kind === 'workspace') setHiddenWorkspaceIds(prev => { const n = new Set(prev); n.delete(id); return n })
+      else setHiddenPaneIds(prev => { const n = new Set(prev); n.delete(id); return n })
+      showErr(e instanceof Error ? e.message : String(e))
+    }
+  }
+  const onCloseWorkspace = (id: string) => { void postClose('workspace', id) }
+  const onClosePane = (id: string) => { void postClose('pane', id) }
+
+  const onPaneClick = (target: HerdrDashboardPaneRef) => {
+    const sid = getSessionId()
+    void fetchPaneSession(target.pane_id).then(paneSessionId => {
+      let state
+      try {
+        state = navigateToPane(target.pane_id, { selfSessionId: sid, paneSessionId })
+      } catch (e) {
+        showNotice(e instanceof Error ? e.message : String(e))
+        return
+      }
+      // unbound（无会话归属）同样关闭面板并跳转：navigateToPane 已在本会话
+      // Herdr Tab 尽力定位；归属查询失败（fetch 异常）也会落到 unbound，
+      // 此时定位是 no-op 但面板已关闭——可接受（不再提示「无法跳转」）。
+      closeGlobalDashboard()
     })
   }
 
@@ -402,8 +455,21 @@ export function GlobalDashboardSurface() {
           {notice}
         </div>
       ) : null}
+      {actionError ? (
+        <div className="herdr-action-error" key={actionError.key}>
+          <span>{actionError.message}</span>
+          <button type="button" onClick={() => setActionError(null)} aria-label={t('view.close')}>✕</button>
+        </div>
+      ) : null}
       <div className="herdr-gds-body">
-        <DashboardContent onPaneClick={onPaneClick} />
+        <DashboardContent
+          onPaneClick={onPaneClick}
+          selfPaneId={selfPaneId}
+          hiddenWorkspaceIds={hiddenWorkspaceIds}
+          hiddenPaneIds={hiddenPaneIds}
+          onCloseWorkspace={onCloseWorkspace}
+          onClosePane={onClosePane}
+        />
       </div>
     </section>
   )

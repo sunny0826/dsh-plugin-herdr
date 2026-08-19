@@ -199,6 +199,61 @@ test('buildDashboardSummary: totals and status distribution from one normalized 
 })
 
 // ---------------------------------------------------------------------------
+// v5：workspace pane 明细（可点击跳转 / 可关闭的数据源）
+// ---------------------------------------------------------------------------
+
+test('aggregateDashboardWorkspaces: pane detail joins agent (label/kind/name/status)', () => {
+  const topo2: DashboardTopologyLike = {
+    workspaces: [{ workspace_id: 'w1', label: 'demo' }],
+    tabs: [],
+    panes: [
+      { pane_id: 'w1:p2', workspace_id: 'w1' },
+      { pane_id: 'w1:p1', workspace_id: 'w1', label: 'root pane' },
+    ],
+  }
+  const ag2 = [
+    { pane_id: 'w1:p1', workspace_id: 'w1', kind: 'codex', name: 'codex-a', status: 'working' },
+    { pane_id: 'w1:p2', workspace_id: 'w1', agent: 'pi', status: 'blocked' },
+  ]
+  const ws = aggregateDashboardWorkspaces(topo2, ag2)
+  assert.equal(ws.length, 1)
+  assert.equal(ws[0].pane_count, 2)
+  // pane_id 自然排序：w1:p1 < w1:p2
+  assert.deepEqual(ws[0].panes.map(p => p.pane_id), ['w1:p1', 'w1:p2'])
+  const p1 = ws[0].panes[0]
+  assert.equal(p1.label, 'root pane')
+  assert.equal(p1.kind, 'codex')
+  assert.equal(p1.name, 'codex-a')
+  assert.equal(p1.status, 'working')
+  const p2 = ws[0].panes[1]
+  assert.equal(p2.label, null, '无 label → null')
+  assert.equal(p2.kind, 'pi', 'kind 回退链 kind → agent')
+  assert.equal(p2.name, undefined, '无自定义 target 名')
+  assert.equal(p2.status, 'blocked')
+})
+
+test('aggregateDashboardWorkspaces: non-agent pane falls back to agent_status + unknown kind', () => {
+  const topo2: DashboardTopologyLike = {
+    workspaces: [{ workspace_id: 'w1' }],
+    tabs: [],
+    panes: [
+      { pane_id: 'w1:p1', workspace_id: 'w1', agent_status: 'idle' },
+      { pane_id: 'w1:p2', workspace_id: 'w1', label: 'plain', agent_status: 'unknown' },
+    ],
+  }
+  const ws = aggregateDashboardWorkspaces(topo2, [])
+  assert.equal(ws[0].pane_count, 2)
+  assert.equal(ws[0].agent_count, 0, '无 agent 归属')
+  assert.equal(ws[0].panes[0].pane_id, 'w1:p1')
+  assert.equal(ws[0].panes[0].label, null)
+  assert.equal(ws[0].panes[0].kind, 'unknown', '非 agent pane kind=unknown')
+  assert.equal(ws[0].panes[0].name, undefined)
+  assert.equal(ws[0].panes[0].status, 'idle', '非 agent pane 回退 agent_status')
+  assert.equal(ws[0].panes[1].label, 'plain')
+  assert.equal(ws[0].panes[1].status, 'unknown', 'agent_status 未知 → unknown')
+})
+
+// ---------------------------------------------------------------------------
 // v4：kind 归一化 / agent 收集 / kind 计数 / Treemap / marker 状态派生
 // ---------------------------------------------------------------------------
 

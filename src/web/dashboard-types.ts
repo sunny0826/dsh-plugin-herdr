@@ -56,6 +56,24 @@ export interface HerdrDashboardAgent {
   status: string
 }
 
+/** 跳转目标的最小形状（agent 行 / pane 行共用的 pane_id 引用）。 */
+export interface HerdrDashboardPaneRef {
+  pane_id: string
+}
+
+/** workspace 内单个 pane 明细（含非 agent 纯终端 pane；点击跳转 / 关闭的数据源）。 */
+export interface HerdrDashboardPane {
+  pane_id: string
+  /** topology label（pane 显示名；可能为 null）。 */
+  label: string | null
+  /** 归属 agent 的归一化 kind；非 agent pane 为 'unknown'。 */
+  kind: string
+  /** 自定义 target 名称（无则 undefined）。 */
+  name?: string
+  /** 状态输入（agent.status；非 agent 回退 agent_status）。 */
+  status: string
+}
+
 export interface HerdrDashboardWorkspace {
   workspace_id: string
   label: string | null
@@ -67,6 +85,8 @@ export interface HerdrDashboardWorkspace {
   agents_working: number
   agents_blocked: number
   agents: HerdrDashboardAgent[]
+  /** pane 明细（可点击跳转 / 可关闭）。 */
+  panes: HerdrDashboardPane[]
 }
 
 export interface HerdrDashboardSummary {

@@ -287,7 +287,10 @@ export function stripAnsi(text: string): string {
   return ansiPlainText(text)
 }
 
-/** ANSI 安全清理 viewport 快照填充：去首部纯空白行 + 每行行尾空白（pane.read visible 每行按终端宽度右补空格）。 */
+/** ANSI 安全清理 viewport 快照填充：去首部纯空白行 + 每行行尾空白（pane.read visible 每行按终端宽度右补空格）。
+ *  行间用 CRLF 重连：该输出直供 xterm `write()`，而 ANSI 的 LF(0x0A) 只做 index（下移、列不变）、
+ *  不会归列到 0——裸 `\n` 会使每一行从上一行末列起写，造成阶梯错位（首行产生"贴顶乱码"），
+ *  必须用 `\r\n` 才让每行从第 0 列开始。 */
 export function trimAnsiSnapshotPadding(text: string): string {
   const lines = text.split(/\r?\n/)
   let first = 0
@@ -295,7 +298,23 @@ export function trimAnsiSnapshotPadding(text: string): string {
   return lines
     .slice(first)
     .map(line => line.replace(/[ \t]+$/, ''))
-    .join('\n')
+    .join('\r\n')
+}
+
+/**
+ * 在 xterm 中建立新的 full-frame 屏幕基线。
+ *
+ * Herdr 的 full frame 是 Ghostty 终端模型的完整画面，但浏览器端可能
+ * 已经写入了历史快照；先清理可见屏幕并回到左上角，避免旧 prompt/字符
+ * 残留在新画面之外。保留 scrollback，因此历史内容仍可滚动查看。
+ */
+export function rebaseTerminalFrame(bytes: Uint8Array, full: boolean): Uint8Array {
+  if (!full) return bytes
+  const prefix = new Uint8Array([0x1b, 0x5b, 0x32, 0x4a, 0x1b, 0x5b, 0x48]) // CSI 2 J + CSI H
+  const rebased = new Uint8Array(prefix.length + bytes.length)
+  rebased.set(prefix)
+  rebased.set(bytes, prefix.length)
+  return rebased
 }
 
 /** 压缩连续空行（保留至多 1 个空行分隔）；基于 AnsiLine.plainText 判断。 */
