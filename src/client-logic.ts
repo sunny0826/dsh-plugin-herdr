@@ -513,7 +513,7 @@ export function agentTheme(agentName: string | undefined): AgentAccent {
 // ---------------------------------------------------------------------------
 export type { AnsiColor, AnsiColorKind, AnsiStyle, AnsiToken, AnsiLine } from './terminal-ansi.ts'
 export type { TerminalScreen, TerminalCell, TerminalCursor } from './terminal-ansi.ts'
-export { parseAnsiOutput, ansiPlainText, stripAnsi, compactAnsiLines, trimAnsiSnapshotPadding, truncateAnsiTail, replayTerminalSnapshot } from './terminal-ansi.ts'
+export { parseAnsiOutput, ansiPlainText, stripAnsi, compactAnsiLines, trimAnsiSnapshotPadding, rebaseTerminalFrame, truncateAnsiTail, replayTerminalSnapshot } from './terminal-ansi.ts'
 
 // ---------------------------------------------------------------------------
 // 交互式终端输入映射与滚动状态（design: pane-interactive-terminal §3.3/§3.5）

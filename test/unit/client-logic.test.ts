@@ -43,6 +43,7 @@ import {
   terminalScrollTransition,
   toggleCollapse,
   trimAnsiSnapshotPadding,
+  rebaseTerminalFrame,
   truncateAnsiTail,
   validateLabel,
 } from '../../src/client-logic.ts'
@@ -1143,10 +1144,18 @@ test('isDshPane: agent 为 dsh 或 label 以 dsh: 开头判为插件自身 pane'
 test('trimAnsiSnapshotPadding: 去首部空行与行尾填充空白（保留 ANSI 序列）', () => {
   assert.equal(trimAnsiSnapshotPadding(''), '')
   assert.equal(trimAnsiSnapshotPadding('   \n  \ncontent'), 'content')
-  assert.equal(trimAnsiSnapshotPadding('content\n'), 'content\n')
-  assert.equal(trimAnsiSnapshotPadding('content   \nnext\t\n'), 'content\nnext\n')
+  assert.equal(trimAnsiSnapshotPadding('content\n'), 'content\r\n')
+  assert.equal(trimAnsiSnapshotPadding('content   \nnext\t\n'), 'content\r\nnext\r\n')
   // ANSI 序列保留，仅去掉纯空白
-  assert.equal(trimAnsiSnapshotPadding('\u001b[31mred\u001b[0m   \nplain'), '\u001b[31mred\u001b[0m\nplain')
-  // CRLF 归一为 \n
-  assert.equal(trimAnsiSnapshotPadding('\r\n\r\ncontent\r\n'), 'content\n')
+  assert.equal(trimAnsiSnapshotPadding('\u001b[31mred\u001b[0m   \nplain'), '\u001b[31mred\u001b[0m\r\nplain')
+  // CRLF 归一为 CRLF（直供 xterm：LF 只 index 不归列，必须 CRLF 才从第 0 列起写）
+  assert.equal(trimAnsiSnapshotPadding('\r\n\r\ncontent\r\n'), 'content\r\n')
+})
+
+test('rebaseTerminalFrame: full frame clears visible screen and homes cursor', () => {
+  const frame = new Uint8Array([0x41, 0x42])
+  assert.deepEqual([...rebaseTerminalFrame(frame, true)], [
+    0x1b, 0x5b, 0x32, 0x4a, 0x1b, 0x5b, 0x48, 0x41, 0x42,
+  ])
+  assert.strictEqual(rebaseTerminalFrame(frame, false), frame)
 })

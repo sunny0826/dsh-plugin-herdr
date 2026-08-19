@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const source = readFileSync(join(root, 'src', 'web', 'pane-terminal.tsx'), 'utf8')
+const stylesSource = readFileSync(join(root, 'src', 'web', 'styles.ts'), 'utf8')
 
 test('pane-terminal.tsx: no dangerouslySetInnerHTML', () => {
   assert.doesNotMatch(source, /=\s*\{[^}]*dangerouslySetInnerHTML/, 'must not use dangerouslySetInnerHTML')
@@ -63,4 +64,9 @@ test('pane-terminal.tsx: handles resize with FitAddon', () => {
 
 test('pane-terminal.tsx: cleans up terminal on unmount', () => {
   assert.match(source, /terminal\.dispose/, 'must dispose terminal on cleanup')
+})
+
+test('terminal DOM width-measure samples stay offscreen', () => {
+  assert.match(stylesSource, /\.herdr-xterm-host \.xterm-char-measure-element\s*\{[^}]*visibility: hidden/, 'xterm measure text must be hidden')
+  assert.match(stylesSource, /\.herdr-xterm-host \.xterm-char-measure-element\s*\{[^}]*left: -9999em/, 'xterm measure text must stay offscreen')
 })

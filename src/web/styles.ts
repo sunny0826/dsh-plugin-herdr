@@ -311,6 +311,16 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
   resize: none;
   white-space: nowrap;
 }
+/* xterm 6 DOM renderer 的测宽节点会写入 )、% 等样本文本；必须离屏隐藏，
+ * 否则它们会作为普通 inline 内容覆盖终端首行。 */
+.herdr-xterm-host .xterm-char-measure-element {
+  display: inline-block;
+  visibility: hidden;
+  position: absolute;
+  top: 0;
+  left: -9999em;
+  line-height: normal;
+}
 .herdr-xterm-host .composition-view {
   display: none;
   position: absolute;
