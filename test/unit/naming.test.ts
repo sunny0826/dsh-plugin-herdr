@@ -11,10 +11,10 @@ import {
 
 // MG-55：workspace/pane 命名规范（显示名 = dsh:<项目名>；内部标记 = tokens.dsh_session）
 
-test('MG-55: displayLabel uses project basename with dsh: prefix', () => {
-  assert.equal(displayLabel('/Users/san3an/Documents/test', 'session-abc1234567890'), 'dsh:test')
-  assert.equal(displayLabel('/proj/dsh-plugin/', 'session-x'), 'dsh:dsh-plugin')
-  assert.equal(displayLabel('/x', 'session-abc1234567890'), 'dsh:x')
+test('MG-55: displayLabel appends the session short id to the project basename', () => {
+  assert.equal(displayLabel('/Users/san3an/Documents/test', 'session-abc1234567890'), 'dsh:test-34567890')
+  assert.equal(displayLabel('/proj/dsh-plugin/', 'session-x'), 'dsh:dsh-plugin-x')
+  assert.equal(displayLabel('/x', 'session-abc1234567890'), 'dsh:x-34567890')
 })
 
 test('MG-55: displayLabel falls back to short session id without cwd', () => {

@@ -165,10 +165,11 @@ dsh plugin --profile web remove dsh-plugin-herdr
 
 ### 命名规范
 
-- **显示名**（workspace / 绑定 pane label）：`dsh:<项目名>`（会话 cwd 的
-  basename；无 cwd 回退 `dsh:<短会话 id>`）。配置 `label` 可覆盖。
+- **显示名**（workspace / 绑定 pane label）：`dsh:<项目名>-<会话短 id>`
+  （项目名 = 会话 cwd 的 basename；无 cwd 回退 `dsh:<会话短 id>`）——同一项目
+  下的多个会话靠会话短 id 区分，互不重名。配置 `label` 可覆盖。
 - **内部标记与显示名分离**：标记存放在 pane 的 `tokens.dsh_session`
-  （而非 label），显示名中不暴露 session id。
+  （而非 label），tokens 保留完整 session id，显示名只暴露后 8 位短标识。
 - **agent 名**：`herdr_agent_start` 自动生成 `<kind>-<n>`（如 `pi-1`）；
   显式传 `name` 用 `<kind>-<用途>`（如 `pi-disk-check`）。
 
@@ -197,7 +198,7 @@ herdr_pane_read    {pane_id: '<pane_id>'}              # 读取结果
 - **日志预览/展开**：卡片正文显示最近输出（渐隐）；「展开」提供独立滚动
   日志，自动跟随 working 的 agent，可「复制」完整输出。
 - **重命名**：✎ 或双击进入行内编辑（≤64 字符）；清空 pane 名称即移除
-  （回退到标题）。重命名由 herdr server 持久化。
+  （回退到 agent 名，无则回退标题）。重命名由 herdr server 持久化。
 - **关闭**：✕（hover 显示）弹出确认对话框；关闭 workspace 时显示其 pane
   数。对话框与服务端都会拒绝关闭承载当前会话的 pane（self-pane）。
 - **Herdr Tab logo**：Tab 以 herdr logo（CSS mask、随主题取色）替代文字。

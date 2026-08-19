@@ -196,12 +196,13 @@ Select **Herdr 模式** when creating a session. The session:
 
 ### Naming conventions
 
-- **Display name** (workspace / bound-pane label): `dsh:<project name>`
-  (session cwd basename; `dsh:<short session id>` fallback). Config `label`
-  overrides.
+- **Display name** (workspace / bound-pane label): `dsh:<project name>-<short
+  session id>` (project name = session cwd basename; `dsh:<short session id>`
+  fallback without a cwd) — concurrent sessions in the same project stay
+  distinct. Config `label` overrides.
 - **Internal marker** is kept separate from the display name: the pane's
-  `tokens.dsh_session` (not the label), so no session id leaks into visible
-  names.
+  `tokens.dsh_session` (not the label) keeps the full session id; only the
+  last-8 short id appears in visible names.
 - **Agent names**: `herdr_agent_start` auto-generates `<kind>-<n>` (e.g.
   `pi-1`); pass `name` explicitly for `<kind>-<purpose>` (e.g.
   `pi-disk-check`).
@@ -237,8 +238,8 @@ herdr 模式):
   "展开" gives an independently scrolling log that auto-follows a working agent
   and offers "复制" (full output).
 - **Rename**: ✎ or double-click turns the pane/workspace name into an inline
-  input (≤64 chars); clearing the pane name removes it (falls back to title).
-  Renames are persisted by herdr server.
+  input (≤64 chars); clearing the pane name removes it (falls back to the
+  agent name, then the title). Renames are persisted by herdr server.
 - **Close**: ✕ (hover) opens a confirm dialog; a workspace close shows its pane
   count. The dialog and the server both refuse closing the pane that hosts the
   current session (self-pane).
