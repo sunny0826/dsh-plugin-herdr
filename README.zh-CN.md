@@ -165,10 +165,11 @@ dsh plugin --profile web remove dsh-plugin-herdr
 
 ### 命名规范
 
-- **显示名**（workspace / 绑定 pane label）：`dsh:<项目名>`（会话 cwd 的
-  basename；无 cwd 回退 `dsh:<短会话 id>`）。配置 `label` 可覆盖。
+- **显示名**（workspace / 绑定 pane label）：`dsh:<项目名>-<会话短 id>`
+  （项目名 = 会话 cwd 的 basename；无 cwd 回退 `dsh:<会话短 id>`）——同一项目
+  下的多个会话靠会话短 id 区分，互不重名。配置 `label` 可覆盖。
 - **内部标记与显示名分离**：标记存放在 pane 的 `tokens.dsh_session`
-  （而非 label），显示名中不暴露 session id。
+  （而非 label），tokens 保留完整 session id，显示名只暴露后 8 位短标识。
 - **agent 名**：`herdr_agent_start` 自动生成 `<kind>-<n>`（如 `pi-1`）；
   显式传 `name` 用 `<kind>-<用途>`（如 `pi-disk-check`）。
 

@@ -19,7 +19,8 @@ export interface Config {
   source: string
   /**
    * workspace/pane 显示名前缀或完整 label。
-   * 留空（默认）自动生成 "dsh:<项目名>"（cwd basename，无 cwd 回退 "dsh:<短id>"）；
+   * 留空（默认）自动生成 "dsh:<项目名>-<会话短id>"（cwd basename + 短 id 区分
+   * 同项目多会话；无 cwd 回退 "dsh:<短id>"）；
    * 非空时作为完整 label 使用（自定义覆盖）。
    */
   label: string
@@ -113,7 +114,7 @@ export function apply(ctx: Context, config: Config) {
    *   workspace，绑定 pane 为其 root pane——本会话产出的 pane（split/复用）都
    *   归于此 workspace，与其他会话/用户 workspace（如 ~）隔离；
    * - sessionCwd：会话工作目录，创建 workspace 时优先使用；
-   * - 显示名与内部标记分离（MG-55）：workspace/pane label = "dsh:<项目名>"（显示名）；
+   * - 显示名与内部标记分离（MG-55）：workspace/pane label = "dsh:<项目名>-<会话短id>"（显示名）；
    *   内部标记 = 绑定 pane 的 tokens.dsh_session（report_metadata 写入，ttl=null 永久）——
    *   复用与 /herdr-session-pane 兜底查询都走 tokens，不再用 label 承载 session id；
    * - 复用：herdr 中已存在带本会话 tokens 标记的 pane 时直接复用（进程重启/插件重载
@@ -142,7 +143,7 @@ export function apply(ctx: Context, config: Config) {
         logger.info('agent %s reused marked pane %s', agentId, existing.pane_id)
       } else {
         // 专属 workspace：项目目录（会话 cwd）创建 root pane 即绑定 pane；
-        // label 用显示名（"dsh:<项目名>"，config.label 非空时自定义覆盖）
+        // label 用显示名（"dsh:<项目名>-<会话短id>"，config.label 非空时自定义覆盖）
         const ws = await ctx.herdr.workspaceCreate({
           label: (config.label ?? '').trim() || displayLabel(sessionCwd, agentId),
           cwd: sessionCwd ?? config.cwd,
@@ -150,7 +151,7 @@ export function apply(ctx: Context, config: Config) {
         if (ws.pane_id) {
           created = { paneId: ws.pane_id, created: true, workspaceId: ws.workspace_id }
           // 显示名（pane label）与内部标记（tokens）分离：
-          // label = "dsh:<项目名>"（用户可见）；tokens.dsh_session = sessionId（复用用）
+          // label = "dsh:<项目名>-<会话短id>"（用户可见）；tokens.dsh_session = sessionId（复用用）
           const label = (config.label ?? '').trim() || displayLabel(sessionCwd, agentId)
           await ctx.herdr.paneRename(ws.pane_id, label).catch(() => {})
           await ctx.herdr.reportMetadata({

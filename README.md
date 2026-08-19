@@ -196,12 +196,13 @@ Select **Herdr 模式** when creating a session. The session:
 
 ### Naming conventions
 
-- **Display name** (workspace / bound-pane label): `dsh:<project name>`
-  (session cwd basename; `dsh:<short session id>` fallback). Config `label`
-  overrides.
+- **Display name** (workspace / bound-pane label): `dsh:<project name>-<short
+  session id>` (project name = session cwd basename; `dsh:<short session id>`
+  fallback without a cwd) — concurrent sessions in the same project stay
+  distinct. Config `label` overrides.
 - **Internal marker** is kept separate from the display name: the pane's
-  `tokens.dsh_session` (not the label), so no session id leaks into visible
-  names.
+  `tokens.dsh_session` (not the label) keeps the full session id; only the
+  last-8 short id appears in visible names.
 - **Agent names**: `herdr_agent_start` auto-generates `<kind>-<n>` (e.g.
   `pi-1`); pass `name` explicitly for `<kind>-<purpose>` (e.g.
   `pi-disk-check`).

@@ -87,10 +87,10 @@ test('session-mode: agent/created creates a dedicated workspace (project cwd) wi
   await flush()
   assert.equal(calls.wsCreates.length, 1, 'dedicated workspace created')
   assert.equal(calls.splits.length, 0, 'no split — dedicated workspace instead')
-  // 显示名与内部标记分离（MG-55）：label = dsh:<项目名>
-  assert.equal(calls.wsCreates[0].label, 'dsh:dsh-plugin', 'workspace label is dsh:<project name>')
+  // 显示名与内部标记分离（MG-55）：label = dsh:<项目名>-<会话短 id>
+  assert.equal(calls.wsCreates[0].label, 'dsh:dsh-plugin-sess-A', 'workspace label is dsh:<project>-<short session id>')
   assert.equal(calls.wsCreates[0].cwd, '/proj/dsh-plugin', 'workspace created in project cwd')
-  assert.deepEqual(calls.renames[0], { pane_id: 'wN1:p1', label: 'dsh:dsh-plugin' }, 'pane label is the display name')
+  assert.deepEqual(calls.renames[0], { pane_id: 'wN1:p1', label: 'dsh:dsh-plugin-sess-A' }, 'pane label is the display name')
   // 内部标记走 tokens（ttl=null 永久），不在 label 里暴露 session id
   assert.deepEqual(calls.metadata[0], {
     pane_id: 'wN1:p1',
@@ -382,6 +382,6 @@ test('fix: request fallback passes session cwd to workspace create', async () =>
     agent: { id: 'sess-A', session: { header: { cwd: '/proj' } } },
   }, () => 'cfg')
   await flush()
-  assert.deepEqual(calls.wsCreates[0], { label: 'dsh:proj', cwd: '/proj' })
+  assert.deepEqual(calls.wsCreates[0], { label: 'dsh:proj-sess-A', cwd: '/proj' })
   void ctx.fiber.dispose()
 })
