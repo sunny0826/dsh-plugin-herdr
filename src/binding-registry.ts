@@ -46,9 +46,9 @@ export function getBoundWorkspaceIds(): string[] {
 
 /**
  * 命名规范（design: herdr-mode-gating MG-55）：
- * - 显示名（workspace/pane label）："dsh:<项目名>-<会话短id>"（项目名 = 会话 cwd 的
- *   basename；无 cwd 时回退 "dsh:<会话短id>"）——同一项目下的多个会话靠会话短 id
- *   区分，herdr UI 可读、可区分会话；
+ * - 显示名（workspace/pane label）：优先取会话标题（session/title，GUI 会话名）；
+ *   无标题时回退 "dsh:<项目名>-<会话短id>"（项目名 = 会话 cwd 的 basename；无 cwd
+ *   时回退 "dsh:<会话短id>"）——同一项目下的多个会话靠会话短 id 区分；
  * - 内部标记（绑定 pane 的 tokens.dsh_session = sessionId）：显示名与内部标记
  *   分离——复用/兜底查询走 tokens（ttl_ms=null 永久有效），tokens 保留完整
  *   session id，显示名只暴露后 8 位短标识。
@@ -68,7 +68,7 @@ export function projectName(cwd: string | undefined): string | undefined {
   return base && base !== '' && base !== '.' ? base : undefined
 }
 
-/** 显示名（workspace/pane label 共用）："dsh:<项目名>-<短id>"，无项目名回退 "dsh:<短id>"。 */
+/** 显示名兜底（workspace/pane label 共用；优先取会话标题时由调用方决定）："dsh:<项目名>-<短id>"，无项目名回退 "dsh:<短id>"。 */
 export function displayLabel(cwd: string | undefined, sessionId: string): string {
   const name = projectName(cwd)
   const short = sessionShortId(sessionId)

@@ -101,7 +101,7 @@ dsh plugin --profile web remove dsh-plugin-herdr
 | Key | 默认值 | 说明 |
 | --- | --- | --- |
 | `paneId` | `''` | 固定绑定 pane（所有会话共用）；留空 = 每个会话自动创建专属 workspace |
-| `label` | `''` | 显示名覆盖；留空 = 自动 `dsh:<项目名>`（cwd basename，回退 `dsh:<短会话 id>`） |
+| `label` | `''` | 显示名覆盖；留空 = 优先会话标题（回退 `dsh:<项目名>-<会话短 id>`） |
 | `cwd` | – | workspace 工作目录；留空 = 会话项目目录 |
 
 输出上限（CA-014）：
@@ -165,9 +165,11 @@ dsh plugin --profile web remove dsh-plugin-herdr
 
 ### 命名规范
 
-- **显示名**（workspace / 绑定 pane label）：`dsh:<项目名>-<会话短 id>`
-  （项目名 = 会话 cwd 的 basename；无 cwd 回退 `dsh:<会话短 id>`）——同一项目
-  下的多个会话靠会话短 id 区分，互不重名。配置 `label` 可覆盖。
+- **显示名**（workspace / 绑定 pane label）：优先取**会话标题**（session/title，
+  即 GUI 侧边栏显示的会话名，如「开启一个 pi Agent 检查当前系统」）；标题异步
+  生成（首个用户消息后），生成后自动补正重命名。无标题时回退
+  `dsh:<项目名>-<会话短 id>`（项目名 = 会话 cwd 的 basename；无 cwd 回退
+  `dsh:<会话短 id>`）。配置 `label` 可覆盖。
 - **内部标记与显示名分离**：标记存放在 pane 的 `tokens.dsh_session`
   （而非 label），tokens 保留完整 session id，显示名只暴露后 8 位短标识。
 - **agent 名**：`herdr_agent_start` 自动生成 `<kind>-<n>`（如 `pi-1`）；

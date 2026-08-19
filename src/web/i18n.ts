@@ -142,8 +142,6 @@ export const I18N_KEYS = {
   'dashboard.agentUnnamed': { zh: '未命名代理', en: 'Unnamed agent' },
   // ── Treemap 块点击跳转（pane → 对应会话 Herdr Tab） ──────────────────
   'dashboard.paneMultiple': { zh: '该分类下有 {count} 个窗格，无法定位具体窗格', en: '{count} panes in this group, cannot locate a specific pane' },
-  'dashboard.paneForeign': { zh: '该窗格属于其他会话，无法跳转', en: 'This pane belongs to another session' },
-  'dashboard.paneUnbound': { zh: '该窗格未绑定任何会话，无法跳转', en: 'This pane is not bound to any session' },
   // ── 五态展示模型（design: herdr-tab-redesign §4.3） ──────────────────
   'status.working': { zh: '工作中', en: 'Working' },
   'status.blocked': { zh: '等待处理', en: 'Blocked' },
@@ -185,6 +183,14 @@ export const I18N_KEYS = {
   'pane.expandLog': { zh: '展开日志', en: 'Expand log' },
   'pane.collapseLog': { zh: '收起日志', en: 'Collapse log' },
   'dashboard.checkoutBase': { zh: '检出目录', en: 'Checkout' },
+  // ── v5：workspace 卡片关闭 / pane 列表跳转（design: dashboard-close-jump） ──
+  'dashboard.closeWorkspace': { zh: '关闭工作区', en: 'Close workspace' },
+  'dashboard.closeWorkspaceTitle': { zh: '关闭工作区 {id}', en: 'Close workspace {id}' },
+  'dashboard.closePaneTitle': { zh: '关闭窗格 {id}', en: 'Close pane {id}' },
+  'dashboard.expandPanes': { zh: '展开窗格', en: 'Expand panes' },
+  'dashboard.collapsePanes': { zh: '收起窗格', en: 'Collapse panes' },
+  'dashboard.paneJumpTitle': { zh: '{id} · 点击跳转到所属会话', en: '{id} · Click to jump to its session' },
+  'dashboard.paneSelfTitle': { zh: '{id}（本对话）· 在 Herdr 中定位', en: '{id} (this conversation) · Locate in Herdr' },
 } as const
 
 export type I18nKey = keyof typeof I18N_KEYS

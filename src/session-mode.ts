@@ -12,15 +12,30 @@ import { createLogger, createRateLimiter, errText } from './log.ts'
 // agent/request、agent/turn-stopping 带 agent 载体与 payload.agent）
 import type {} from '@deepseek-ai/dsh-agent'
 
+// session/event（Scoped<Session>）事件声明：会话事件经 session 载体按 scope 投递，
+// standing scope（agent scope 的祖先）可收到本 preset 会话的全部事件。这里本地声明
+// 最小形状（不引入 @deepseek-ai/dsh-session 依赖），仅用于读取 session/title 重命名。
+interface SessionEventLike {
+  type: string
+  data?: { title?: unknown }
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    'session/event'(this: unknown, session: { id: string }, event: SessionEventLike): void
+  }
+}
+
 export interface Config {
   /** 固定绑定的 Herdr pane（所有会话共用）；留空则每会话自动创建专属 pane。 */
   paneId?: string
   /** 上报来源标识（Herdr 侧边栏按 source 区分）。 */
   source: string
   /**
-   * workspace/pane 显示名前缀或完整 label。
-   * 留空（默认）自动生成 "dsh:<项目名>-<会话短id>"（cwd basename + 短 id 区分
-   * 同项目多会话；无 cwd 回退 "dsh:<短id>"）；
+   * workspace/pane 显示名。
+   * 留空（默认）优先取会话标题（session/title，即 GUI 中显示的会话名），
+   * 无标题时回退 "dsh:<项目名>-<会话短id>"（cwd basename + 短 id 区分
+   * 同项目多会话；无 cwd 回退 "dsh:<短id>"）；标题异步生成，生成后自动补正；
    * 非空时作为完整 label 使用（自定义覆盖）。
    */
   label: string
@@ -109,18 +124,49 @@ export function apply(ctx: Context, config: Config) {
   }
 
   /**
+   * 会话标题：折叠 session.events 中最新一条 session/title 事件（last-wins）。
+   * 无标题/事件缺失返回 undefined。标题来自会话首个用户消息的自动生成
+   * （session-title），异步出现——bind 时可能尚无，随后由 session/event 监听补正。
+   */
+  const sessionTitleOf = (session: unknown): string | undefined => {
+    const events = (session as { events?: unknown } | undefined)?.events
+    if (!Array.isArray(events)) return undefined
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i] as SessionEventLike | undefined
+      if (e?.type !== 'session/title') continue
+      const title = e.data?.title
+      return typeof title === 'string' && title.trim() !== '' ? title.trim() : undefined
+    }
+    return undefined
+  }
+
+  /** 显示名：config.label 覆盖 > 会话标题 > dsh:<项目名>-<会话短id> 兜底。 */
+  const resolveLabel = (sessionCwd: string | undefined, agentId: string, session?: unknown): string =>
+    (config.label ?? '').trim() || sessionTitleOf(session) || displayLabel(sessionCwd, agentId)
+
+  /** 按显示名重命名绑定 workspace + pane（尽力而为，失败静默）。 */
+  const renameBound = (binding: Binding, label: string): void => {
+    if (binding.workspaceId) {
+      void ctx.herdr.workspaceRename(binding.workspaceId, label).catch(() => {})
+    }
+    void ctx.herdr.paneRename(binding.paneId, label).catch(() => {})
+  }
+
+  /**
    * 为 agent 绑定 pane（幂等；CA-013：bind 完成前 agent 已 dispose 则不注册并清理已建 pane）。
    * - 专属 workspace：会话启动时在项目目录（agent.session.header.cwd）创建专属
    *   workspace，绑定 pane 为其 root pane——本会话产出的 pane（split/复用）都
    *   归于此 workspace，与其他会话/用户 workspace（如 ~）隔离；
-   * - sessionCwd：会话工作目录，创建 workspace 时优先使用；
-   * - 显示名与内部标记分离（MG-55）：workspace/pane label = "dsh:<项目名>-<会话短id>"（显示名）；
+   * - session：会话对象（agent.session），用于读取 cwd 与标题（session/title）；
+   * - 显示名与内部标记分离（MG-55）：workspace/pane label 优先取会话标题
+   *   （用户可见的会话名），无标题时回退 "dsh:<项目名>-<会话短id>"；
    *   内部标记 = 绑定 pane 的 tokens.dsh_session（report_metadata 写入，ttl=null 永久）——
    *   复用与 /herdr-session-pane 兜底查询都走 tokens，不再用 label 承载 session id；
    * - 复用：herdr 中已存在带本会话 tokens 标记的 pane 时直接复用（进程重启/插件重载
-   *   后 registry 内存清空、并发重复 created 的场景），避免同一个会话累积多个 pane。
+   *   后 registry 内存清空、并发重复 created 的场景），避免同一个会话累积多个 pane；
+   *   复用时若会话标题已可用则补正 workspace/pane 显示名。
    */
-  const bind = async (agentId: string, sessionCwd?: string): Promise<Binding | null> => {
+  const bind = async (agentId: string, session?: unknown): Promise<Binding | null> => {
     if (bindings.has(agentId)) return bindings.get(agentId)!
     // 防重入：在途 bind 直接返回（并发重复 created / 兜底 bind 不重复创建 pane）
     if (pending.has(agentId)) return null
@@ -135,24 +181,27 @@ export function apply(ctx: Context, config: Config) {
     let created: Binding | null = null
     try {
       const snap = await ctx.herdr.snapshot()
+      const sessionCwd = (session as { header?: { cwd?: string } } | undefined)?.header?.cwd
+      const label = resolveLabel(sessionCwd, agentId, session)
       // 复用：herdr 中已存在带本会话 tokens 标记的 pane（registry 清空/重启后的恢复）
       const existing = (snap.panes ?? []).find(p => sessionIdFromTokens(p.tokens) === agentId)
       if (existing) {
         // 复用标记 pane（此前会话遗留/registry 清空后的恢复）；本会话负责其生命周期
         created = { paneId: existing.pane_id, created: true, workspaceId: existing.workspace_id }
+        // 会话标题已可用 → 补正显示名（bind 时标题尚未生成的场景由 session/event 兜底）
+        if (sessionTitleOf(session)) renameBound(created, label)
         logger.info('agent %s reused marked pane %s', agentId, existing.pane_id)
       } else {
         // 专属 workspace：项目目录（会话 cwd）创建 root pane 即绑定 pane；
-        // label 用显示名（"dsh:<项目名>-<会话短id>"，config.label 非空时自定义覆盖）
+        // label 用显示名（会话标题，无标题回退 "dsh:<项目名>-<会话短id>"，config.label 非空时自定义覆盖）
         const ws = await ctx.herdr.workspaceCreate({
-          label: (config.label ?? '').trim() || displayLabel(sessionCwd, agentId),
+          label,
           cwd: sessionCwd ?? config.cwd,
         })
         if (ws.pane_id) {
           created = { paneId: ws.pane_id, created: true, workspaceId: ws.workspace_id }
           // 显示名（pane label）与内部标记（tokens）分离：
-          // label = "dsh:<项目名>-<会话短id>"（用户可见）；tokens.dsh_session = sessionId（复用用）
-          const label = (config.label ?? '').trim() || displayLabel(sessionCwd, agentId)
+          // label = 会话标题/显示名（用户可见）；tokens.dsh_session = sessionId（复用用）
           await ctx.herdr.paneRename(ws.pane_id, label).catch(() => {})
           await ctx.herdr.reportMetadata({
             pane_id: ws.pane_id,
@@ -195,12 +244,11 @@ export function apply(ctx: Context, config: Config) {
 
   // 事件 payload 恒带 agent（id === session id）；类型经 dsh-agent 声明合并，
   // 这里用宽松类型桥访问（与 state-report.ts 一致）
-  const sessionCwdOf = (agent: any): string | undefined =>
-    (agent?.session?.header as { cwd?: string } | undefined)?.cwd
+  const sessionOf = (agent: any): unknown => agent?.session
 
   const offCreated = ctx.on('agent/created', (payload: any) => {
     const agentId = payload.agent.id
-    void bind(agentId, sessionCwdOf(payload.agent)).then(binding => {
+    void bind(agentId, sessionOf(payload.agent)).then(binding => {
       if (binding) report(agentId, 'idle', 'herdr session ready')
     })
   })
@@ -215,7 +263,7 @@ export function apply(ctx: Context, config: Config) {
     const agentId = payload.agent.id
     turnStopped.delete(agentId)
     if (!bindings.has(agentId) && !pending.has(agentId) && !disposedAgents.has(agentId)) {
-      void bind(agentId, sessionCwdOf(payload.agent)).then(binding => {
+      void bind(agentId, sessionOf(payload.agent)).then(binding => {
         if (binding && !turnStopped.has(agentId)) report(agentId, 'working', 'model request in progress')
       })
     }
@@ -244,6 +292,20 @@ export function apply(ctx: Context, config: Config) {
     void cleanupPane(binding)
   })
 
+  // 会话标题补正：标题在 bind 之后异步生成（session/title 事件）→ 重命名 workspace/pane。
+  // 显示名以最新标题为准（last-wins）；config.label 非空时自定义覆盖，永不改写。
+  const offSessionEvent = ctx.on('session/event', (session, event) => {
+    if (event?.type !== 'session/title') return
+    const agentId = session?.id
+    if (typeof agentId !== 'string') return
+    const title = event.data?.title
+    if (typeof title !== 'string' || title.trim() === '') return
+    const binding = bindings.get(agentId)
+    if (!binding) return
+    const label = (config.label ?? '').trim() || title.trim()
+    renameBound(binding, label)
+  })
+
   logger.info('session-mode active (herdr preset standing scope)')
 
   ctx.effect(() => {
@@ -252,6 +314,7 @@ export function apply(ctx: Context, config: Config) {
       offRequest()
       offStopping()
       offDisposed()
+      offSessionEvent()
       // CA-013：只清理本实例拥有的 registry key（多 standing mount / HMR 重叠时不误删他人）
       const ownedIds = [...bindings.keys()]
       for (const binding of bindings.values()) void cleanupPane(binding)

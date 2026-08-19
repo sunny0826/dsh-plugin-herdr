@@ -32,6 +32,7 @@ function makeHarness(markedPanes: MarkedPane[] = [], wsPane: string | null = 'wN
     closes: [] as string[],
     wsCloses: [] as string[],
     renames: [] as Call[],
+    wsRenames: [] as Call[],
     metadata: [] as Call[],
   }
   const herdr = {
@@ -57,6 +58,9 @@ function makeHarness(markedPanes: MarkedPane[] = [], wsPane: string | null = 'wN
     },
     paneRename: async (paneId: string, label: string | null) => {
       calls.renames.push({ pane_id: paneId, label })
+    },
+    workspaceRename: async (workspaceId: string, label: string) => {
+      calls.wsRenames.push({ workspace_id: workspaceId, label })
     },
     reportAgent: async (req: Call) => {
       calls.reports.push(req)
@@ -383,5 +387,93 @@ test('fix: request fallback passes session cwd to workspace create', async () =>
   }, () => 'cfg')
   await flush()
   assert.deepEqual(calls.wsCreates[0], { label: 'dsh:proj-sess-A', cwd: '/proj' })
+  void ctx.fiber.dispose()
+})
+
+// ── 会话标题命名（fix：workspace 以 session 名称命名，而非 dsh:<项目名>-<短id>） ──
+
+/** 构造带标题的会话对象（events 中最新一条 session/title 为标题）。 */
+function titledSession(id: string, title: string, cwd?: string): unknown {
+  return {
+    id,
+    header: { cwd: cwd ?? '/proj/dsh-plugin' },
+    events: [
+      { type: 'user/message', seq: 0, data: {} },
+      { type: 'session/title', seq: 1, data: { title } },
+    ],
+  }
+}
+
+test('session-mode: workspace/pane label uses the session title when available', async () => {
+  const { ctx, calls } = makeHarness()
+  ctx.emit({} as any, 'agent/created', {
+    agent: { id: 'sess-A', session: titledSession('sess-A', '开启一个 pi Agent 检查当前系统') },
+  })
+  await flush()
+  assert.equal(calls.wsCreates[0].label, '开启一个 pi Agent 检查当前系统', 'workspace label = session title')
+  assert.deepEqual(calls.renames[0], { pane_id: 'wN1:p1', label: '开启一个 pi Agent 检查当前系统' }, 'pane label = session title')
+  void ctx.fiber.dispose()
+})
+
+test('session-mode: config.label override wins over the session title', async () => {
+  const ctx = new Context()
+  const calls = { wsCreates: [] as Call[], renames: [] as Call[] }
+  const herdr = {
+    snapshot: async () => ({ focused_pane_id: 'w1:p1', panes: [] }),
+    workspaceCreate: async (req: Call) => { calls.wsCreates.push(req); return { workspace_id: 'wN1', pane_id: 'wN1:p1' } },
+    paneRename: async (paneId: string, label: string | null) => { calls.renames.push({ pane_id: paneId, label }) },
+    reportMetadata: async () => {},
+    workspaceClose: async () => {},
+    reportAgent: async () => {},
+    paneClose: async () => {},
+  }
+  ctx.provide('herdr', herdr)
+  sessionMode.apply(ctx, { paneId: '', source: 'dsh:test', label: '自定义' })
+  ctx.emit({} as any, 'agent/created', {
+    agent: { id: 'sess-A', session: titledSession('sess-A', '开启一个 pi Agent 检查当前系统') },
+  })
+  await flush()
+  assert.equal(calls.wsCreates[0].label, '自定义')
+  assert.deepEqual(calls.renames[0], { pane_id: 'wN1:p1', label: '自定义' })
+  void ctx.fiber.dispose()
+})
+
+test('session-mode: session/title event after bind renames workspace and pane (async title)', async () => {
+  const { ctx, calls } = makeHarness()
+  // bind 时无标题 → 回退 dsh:<项目名>-<短id>
+  ctx.emit({} as any, 'agent/created', {
+    agent: { id: 'sess-A', session: { header: { cwd: '/proj/dsh-plugin' }, events: [] } },
+  })
+  await flush()
+  assert.equal(calls.wsCreates[0].label, 'dsh:dsh-plugin-sess-A')
+  // 标题异步生成（session/title 事件）→ 补正 workspace + pane
+  ctx.emit({} as any, 'session/event', { id: 'sess-A' }, { type: 'session/title', data: { title: '开启一个 pi Agent 检查当前系统' } })
+  await flush()
+  assert.deepEqual(calls.wsRenames, [{ workspace_id: 'wN1', label: '开启一个 pi Agent 检查当前系统' }])
+  assert.equal(calls.renames.at(-1)?.label, '开启一个 pi Agent 检查当前系统')
+  void ctx.fiber.dispose()
+})
+
+test('session-mode: session/title event only renames bound agents (no binding → no-op)', async () => {
+  const { ctx, calls } = makeHarness()
+  ctx.emit({} as any, 'session/event', { id: 'sess-foreign' }, { type: 'session/title', data: { title: '其他会话标题' } })
+  await flush()
+  assert.equal(calls.wsRenames.length, 0, '无绑定不重命名')
+  assert.equal(calls.renames.length, 0)
+  void ctx.fiber.dispose()
+})
+
+test('session-mode: reuse of a marked pane corrects the label when the title is available', async () => {
+  // 模拟进程重启后 registry 清空：复用带 dsh_session 标记的 pane，且标题已生成
+  const { ctx, calls } = makeHarness([
+    { pane_id: 'w9:p2', workspace_id: 'w9', tokens: { dsh_session: 'sess-A' } },
+  ])
+  ctx.emit({} as any, 'agent/created', {
+    agent: { id: 'sess-A', session: titledSession('sess-A', '开启一个 pi Agent 检查当前系统') },
+  })
+  await flush()
+  assert.equal(calls.wsCreates.length, 0, '复用标记 pane，不新建 workspace')
+  assert.deepEqual(calls.wsRenames, [{ workspace_id: 'w9', label: '开启一个 pi Agent 检查当前系统' }], '复用 pane 补正 workspace 显示名')
+  assert.deepEqual(calls.renames, [{ pane_id: 'w9:p2', label: '开启一个 pi Agent 检查当前系统' }], '复用 pane 补正 pane 显示名')
   void ctx.fiber.dispose()
 })

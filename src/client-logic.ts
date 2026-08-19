@@ -742,6 +742,19 @@ export interface DashboardAgentDetail {
   status: string
 }
 
+/** workspace 内单个 pane 明细（服务端 DTO 与 Web 镜像类型共用）。 */
+export interface DashboardPaneDetail {
+  pane_id: string
+  /** topology label（pane 显示名；可能为 null）。 */
+  label: string | null
+  /** 归属 agent 的归一化 kind；非 agent pane 为 'unknown'。 */
+  kind: string
+  /** 自定义 target 名称（无则 undefined）。 */
+  name?: string
+  /** 状态输入（agent.status；非 agent 回退 agent_status）。 */
+  status: string
+}
+
 /** 单个 workspace 的 Dashboard 聚合记录（服务端 DTO 与 Web 镜像类型共用）。 */
 export interface DashboardWorkspaceAgg {
   workspace_id: string
@@ -755,6 +768,8 @@ export interface DashboardWorkspaceAgg {
   agents_blocked: number
   /** v4：workspace 内 agent 明细（同一份数据服务名称列表/Treemap/tooltip）。 */
   agents: DashboardAgentDetail[]
+  /** v5：workspace 内 pane 明细（可点击跳转 / 可关闭；含非 agent 纯终端 pane）。 */
+  panes: DashboardPaneDetail[]
 }
 
 /** 聚合输入的最小 workspace 形状。 */
@@ -768,7 +783,14 @@ export interface DashboardWorkspaceLike {
 export interface DashboardTopologyLike {
   workspaces: ReadonlyArray<DashboardWorkspaceLike>
   tabs: ReadonlyArray<{ workspace_id?: string }>
-  panes: ReadonlyArray<{ pane_id?: string; workspace_id?: string }>
+  panes: ReadonlyArray<{
+    pane_id?: string
+    workspace_id?: string
+    /** pane 显示名（rename 后即时；可能为 null）。 */
+    label?: string | null
+    /** 非 agent pane 的状态输入（agent pane 用 agent.status 优先）。 */
+    agent_status?: string
+  }>
 }
 
 /** 聚合输入的最小 agent 形状。 */
@@ -837,7 +859,7 @@ export function aggregateDashboardWorkspaces(
     if (!t.workspace_id) continue
     tabCount.set(t.workspace_id, (tabCount.get(t.workspace_id) ?? 0) + 1)
   }
-  const panesByWs = new Map<string, Array<{ pane_id?: string }>>()
+  const panesByWs = new Map<string, Array<DashboardTopologyLike['panes'][number]>>()
   const wsByPane = new Map<string, string>()
   for (const p of topology.panes) {
     if (!p.workspace_id) continue
@@ -867,6 +889,20 @@ export function aggregateDashboardWorkspaces(
       const panes = panesByWs.get(id) ?? []
       const agentsOfWs = wsAgents.get(id) ?? []
       const counts = agentStatusCounts(agentsOfWs.map(a => ({ status: a.status })))
+      const agentByPaneId = new Map(agentsOfWs.map(a => [a.pane_id, a] as const))
+      const paneDetails: DashboardPaneDetail[] = panes
+        .filter((p): p is DashboardTopologyLike['panes'][number] & { pane_id: string } => Boolean(p.pane_id))
+        .map(p => {
+          const agent = agentByPaneId.get(p.pane_id)
+          return {
+            pane_id: p.pane_id,
+            label: p.label ?? null,
+            kind: agent?.kind ?? 'unknown',
+            name: agent?.name,
+            status: agent?.status ?? p.agent_status ?? 'unknown',
+          }
+        })
+        .sort((a, b) => comparePaneId(a.pane_id, b.pane_id))
       return {
         workspace_id: id,
         label: w.label ?? null,
@@ -877,6 +913,7 @@ export function aggregateDashboardWorkspaces(
         agents_working: counts['working'] ?? 0,
         agents_blocked: counts['blocked'] ?? 0,
         agents: agentsOfWs,
+        panes: paneDetails,
       }
     })
     .sort((a, b) => compareWorkspaceId(a.workspace_id, b.workspace_id))
@@ -1142,4 +1179,3 @@ export function computeGlobalSurfaceBounds(
     height: viewportHeight,
   }
 }
-

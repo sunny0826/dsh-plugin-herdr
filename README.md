@@ -126,7 +126,7 @@ Preset configuration (`presets/herdr/agent.cordis.yml`, `herdr-session-mode`):
 | Key | Default | Description |
 | --- | --- | --- |
 | `paneId` | `''` | Fixed pane binding shared by all sessions; empty = every session creates its own dedicated workspace |
-| `label` | `''` | Display label override; empty = auto `dsh:<project name>` (cwd basename, falls back to `dsh:<short session id>`) |
+| `label` | `''` | Display label override; empty = session title first (falls back to `dsh:<project name>-<short session id>`) |
 | `cwd` | – | Workspace working directory; empty = the session's project directory |
 
 Output limits (CA-014):
@@ -196,13 +196,17 @@ Select **Herdr 模式** when creating a session. The session:
 
 ### Naming conventions
 
-- **Display name** (workspace / bound-pane label): `dsh:<project name>-<short
-  session id>` (project name = session cwd basename; `dsh:<short session id>`
-  fallback without a cwd) — concurrent sessions in the same project stay
-  distinct. Config `label` overrides.
+- **Display name** (workspace / bound-pane label): the **session title** first
+  (`session/title` — the conversation name shown in the GUI sidebar, e.g.
+  "开启一个 pi Agent 检查当前系统"). The title is generated asynchronously
+  after the first user message and the workspace/pane label is auto-corrected
+  when it arrives. Without a title, it falls back to
+  `dsh:<project name>-<short session id>` (project name = session cwd
+  basename; `dsh:<short session id>` fallback without a cwd). Config `label`
+  overrides.
 - **Internal marker** is kept separate from the display name: the pane's
   `tokens.dsh_session` (not the label) keeps the full session id; only the
-  last-8 short id appears in visible names.
+  last-8 short id appears in fallback names.
 - **Agent names**: `herdr_agent_start` auto-generates `<kind>-<n>` (e.g.
   `pi-1`); pass `name` explicitly for `<kind>-<purpose>` (e.g.
   `pi-disk-check`).

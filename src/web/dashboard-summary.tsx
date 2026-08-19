@@ -14,7 +14,7 @@ import {
 } from '../client-logic.ts'
 import { t, useHerdrLang, type I18nKey } from './i18n.ts'
 import type { PaneDisplayState } from '../client-logic.ts'
-import type { HerdrDashboardSnapshot, HerdrDashboardAgent } from './dashboard-types.ts'
+import type { HerdrDashboardSnapshot, HerdrDashboardAgent, HerdrDashboardPaneRef } from './dashboard-types.ts'
 
 export const STATUS_LABEL_KEYS: Record<PaneDisplayState, I18nKey> = {
   working: 'dashboard.working',
@@ -92,7 +92,7 @@ function KpiTile({ label, value, tone }: { label: string; value: number; tone?: 
 }
 
 /** 代理 卡片：全名称列表（默认前 8 项，显示全部展开）；行可点击跳转 pane。 */
-function AgentsCard({ agents, onPaneClick }: { agents: HerdrDashboardAgent[]; onPaneClick?: (agent: HerdrDashboardAgent) => void }) {
+function AgentsCard({ agents, onPaneClick }: { agents: HerdrDashboardAgent[]; onPaneClick?: (target: HerdrDashboardPaneRef) => void }) {
   const [showAll, setShowAll] = useState(false)
   const visible = showAll ? agents : agents.slice(0, 8)
   return (
@@ -207,7 +207,7 @@ function statusCount(counts: Record<string, number>, state: PaneDisplayState): n
 export function DashboardSummary({ snap, onPaneClick }: {
   snap: HerdrDashboardSnapshot
   /** 点击代理行（跳转对应会话 pane）。 */
-  onPaneClick?: (agent: HerdrDashboardAgent) => void
+  onPaneClick?: (target: HerdrDashboardPaneRef) => void
 }) {
   void useHerdrLang()
   const summary = snap.summary
