@@ -88,33 +88,59 @@ function patchPresetChip(): void {
   }
 }
 
-/** 新建会话「选择模式」中 Herdr 模式芯片前的图标替换为 Herdr logo（design: preset-icon）。 */
+/** Herdr 模式芯片/头部徽标前的图标替换为 Herdr logo（design: preset-icon）。 */
 const PRESET_ICON_CLASS = 'herdr-preset-logo'
 function patchPresetIcon(): void {
-  const candidates = Array.from(document.querySelectorAll('button, [role="button"], [role="option"]'))
+  const candidates = Array.from(document.querySelectorAll(
+    'button, [role="button"], [role="option"], [role="menuitem"], span[class*="ijsosG"], div[data-slot="conversation.session.header.actions"] span, div[data-slot="conversation.session.header.actions"]',
+  ))
   for (const btn of candidates) {
     if (!(btn instanceof HTMLElement)) continue
     const text = (btn.textContent ?? '').trim()
     const isHerdrBtn = text.includes(HERDR_PRESET_NAME_ZH) || text.includes(HERDR_PRESET_NAME_EN)
-    if (!isHerdrBtn) continue
-    if (btn.querySelector('.' + PRESET_ICON_CLASS)) continue
+    const existing = btn.querySelector('.' + PRESET_ICON_CLASS) as HTMLElement | null
+    if (!isHerdrBtn) {
+      // 非 Herdr 触发器（如已切回其他预设的座位按钮）需移除残留的 herdr 掩码，恢复通用图标
+      if (existing) {
+        // 若是后加的 span 占位则直接移除，否则仅移除掩码类以还原原始 svg
+        if (existing.tagName === 'SPAN' && existing.children.length === 0) existing.remove()
+        else {
+          existing.classList.remove(PRESET_ICON_CLASS)
+          existing.removeAttribute('data-herdr-preset-icon')
+        }
+      }
+      continue
+    }
+    if (existing) continue
     let icon: Element | null = btn.querySelector('svg')
     if (!icon) icon = btn.querySelector('[class*="icon" i], [class*="Icon"]')
     if (!icon) icon = btn.querySelector('img')
     if (!icon) {
       const first = btn.firstElementChild
-      if (first) icon = first
+      if (first && first.textContent?.trim() !== text) icon = first
     }
-    if (!icon) continue
-    let target: Element = icon
-    const parent = icon.parentElement
-    if (parent && parent !== btn && /icon/i.test(parent.className ?? '')) {
-      target = parent
+    if (icon) {
+      let target: Element = icon
+      const parent = icon.parentElement
+      if (parent && parent !== btn && /icon/i.test(parent.className ?? '')) {
+        target = parent
+      }
+      if (target instanceof HTMLElement && target.textContent?.trim() === text) {
+        // 文本容器误判为图标时，改为新建 logo 而非复用文本容器
+      } else {
+        target.classList.add(PRESET_ICON_CLASS)
+        target.setAttribute('data-herdr-preset-icon', '')
+        continue
+      }
     }
-    // 避免把文本容器误判为图标（文本容器无 svg 后代但含文本；图标通常为 svg 或空 span）
-    if (target instanceof HTMLElement && target.textContent?.trim() === text) continue
-    target.classList.add(PRESET_ICON_CLASS)
-    target.setAttribute('data-herdr-preset-icon', '')
+    // 无可复用图标（如菜单项仅有文本）则新建 logo 插入标题前
+    const logo = document.createElement('span')
+    logo.className = PRESET_ICON_CLASS
+    logo.setAttribute('data-herdr-preset-icon', '')
+    logo.setAttribute('aria-hidden', 'true')
+    const titleEl = btn.querySelector('[class*="itemName"], [class*="title"], span')
+    if (titleEl) titleEl.insertAdjacentElement('beforebegin', logo)
+    else btn.prepend(logo)
   }
 }
 

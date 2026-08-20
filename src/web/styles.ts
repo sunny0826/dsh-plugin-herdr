@@ -2186,6 +2186,19 @@ svg.herdr-preset-logo > * {
 }
 .pl-row[data-disabled] { opacity: .45; cursor: not-allowed; }
 .pl-row[data-disabled]:hover { background: transparent; }
+/* ── 左侧边栏会话 herdr 标识（session-list-branding）：herdr 模式会话名前的品牌 logo ── */
+.herdr-session-logo {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  display: inline-block;
+  vertical-align: middle;
+  color: var(--herdr-brand, var(--dsw-alias-state-business-primary));
+  margin-right: 4px;
+}
+[data-herdr-session] {
+  /* 预留：关联行可按需高亮（当前仅用于查询与调试，无强制视觉） */
+}
 
 `
   document.head.appendChild(style)
