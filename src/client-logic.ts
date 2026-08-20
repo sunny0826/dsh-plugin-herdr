@@ -660,7 +660,7 @@ export function classifyLogLine(line: string): LogLineKind {
 }
 
 /** Agent 品牌主题（卡片徽章 / 日志强调色）。 */
-export type AgentAccent = 'codex' | 'pi' | 'claude' | 'dsh' | 'other'
+export type AgentAccent = 'codex' | 'pi' | 'claude' | 'dsh' | 'kimi' | 'other'
 
 /** 按 agent 名识别品牌（小写前缀匹配）；未知归 other。 */
 export function agentTheme(agentName: string | undefined): AgentAccent {
@@ -668,6 +668,7 @@ export function agentTheme(agentName: string | undefined): AgentAccent {
   if (n.startsWith('codex')) return 'codex'
   if (n.startsWith('pi-coding') || n.startsWith('pi')) return 'pi'
   if (n.startsWith('claude')) return 'claude'
+  if (n.startsWith('kimi')) return 'kimi'
   if (n.startsWith('dsh')) return 'dsh'
   return 'other'
 }
@@ -978,26 +979,11 @@ export function normalizeAgentKind(kind: string | null | undefined, agent: strin
   return 'unknown'
 }
 
-const DASHBOARD_KINDS = ['codex', 'pi', 'opencode', 'claude', 'dsh'] as const
-
-export type DashboardKind = typeof DASHBOARD_KINDS[number] | 'unknown'
-
-function isDashboardKind(value: string): value is DashboardKind {
-  switch (value) {
-    case 'codex':
-    case 'pi':
-    case 'opencode':
-    case 'claude':
-    case 'dsh':
-      return true
-    default:
-      return false
-  }
-}
+export type DashboardKind = string
 
 export function normalizeDashboardKind(kind: string | null | undefined): DashboardKind {
   const normalized = kind?.trim().toLowerCase() ?? ''
-  return isDashboardKind(normalized) ? normalized : 'unknown'
+  return normalized === '' ? 'unknown' : normalized
 }
 
 export function normalizeDashboardKindCounts(kinds: ReadonlyArray<{ kind: string; value: number }>): Array<{ kind: DashboardKind; value: number }> {
@@ -1248,6 +1234,76 @@ export function stackedBarSegments(statuses: ReadonlyArray<string | undefined>):
     segments.push({ state, count, ratio: count / total })
   }
   return segments
+}
+
+// ---------------------------------------------------------------------------
+// workspace agent kind Treemap（矩形树图：kind 计数 → 矩形布局，面积守恒，纯函数）
+// ---------------------------------------------------------------------------
+
+export interface TreemapItem {
+  key: string
+  value: number
+}
+
+export interface TreemapRect {
+  key: string
+  value: number
+  x: number
+  y: number
+  width: number
+  height: number
+  ratio: number
+}
+
+export function layoutTreemap(items: ReadonlyArray<TreemapItem>, width: number, height: number): TreemapRect[] {
+  const positive = items.filter(i => Number.isFinite(i.value) && i.value > 0)
+  if (positive.length === 0 || width <= 0 || height <= 0) return []
+  const sorted = [...positive].sort((a, b) => b.value - a.value || a.key.localeCompare(b.key))
+  const out: TreemapRect[] = []
+  const stack: Array<{ x: number; y: number; w: number; h: number; items: TreemapItem[] }> = [
+    { x: 0, y: 0, w: width, h: height, items: sorted },
+  ]
+  while (stack.length > 0) {
+    const region = stack.pop()!
+    const { x, y, w, h, items } = region
+    if (items.length === 0 || w <= 0 || h <= 0) continue
+    const total = items.reduce((s, it) => s + it.value, 0)
+    if (total <= 0) continue
+    const horizontal = w >= h
+    const main = horizontal ? w : h
+    const side = horizontal ? h : w
+    const worst = (n: number): number => {
+      const sum = items.slice(0, n).reduce((s, it) => s + it.value, 0)
+      if (sum <= 0) return Number.POSITIVE_INFINITY
+      const thick = side * sum / total
+      let worstVal = 0
+      for (const it of items.slice(0, n)) {
+        const len = main * it.value / sum
+        worstVal = Math.max(worstVal, Math.max(len / thick, thick / len))
+      }
+      return worstVal
+    }
+    let rowLen = 1
+    while (rowLen < items.length && worst(rowLen + 1) <= worst(rowLen)) rowLen++
+    const row = items.slice(0, rowLen)
+    const sum = row.reduce((s, it) => s + it.value, 0)
+    const rowThick = side * sum / total
+    let cursor = 0
+    for (const it of row) {
+      const len = main * it.value / sum
+      out.push(horizontal
+        ? { key: it.key, value: it.value, x: x + cursor, y, width: len, height: rowThick, ratio: it.value / total }
+        : { key: it.key, value: it.value, x, y: y + cursor, width: rowThick, height: len, ratio: it.value / total })
+      cursor += len
+    }
+    const rest = items.slice(rowLen)
+    if (rest.length > 0) {
+      stack.push(horizontal
+        ? { x, y: y + rowThick, w, h: h - rowThick, items: rest }
+        : { x: x + rowThick, y, w: w - rowThick, h, items: rest })
+    }
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------
