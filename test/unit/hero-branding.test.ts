@@ -21,9 +21,9 @@ import {
 } from '../../src/web/hero-branding.ts'
 
 test('hero branding: 文案常量与需求原文一致（漂移哨兵）', () => {
-  assert.equal(HERDR_HERO_TEXT, 'Herdr 助你探索未知之境')
+  assert.equal(HERDR_HERO_TEXT, 'Herdr 助你探索未至之境')
   assert.equal(HERDR_HERO_TEXT_BRAND, 'Herdr 助你')
-  assert.equal(HERDR_HERO_TEXT_PLAIN, '探索未知之境')
+  assert.equal(HERDR_HERO_TEXT_PLAIN, '探索未至之境')
 })
 
 test('hero branding: 分段拼接 == 全文（aria-label 与视觉文案不漂移）', () => {

@@ -20,13 +20,13 @@ import { t, useHerdrLang } from './i18n.ts'
 import { resolveTerminalFontFamily } from './terminal-font.ts'
 
 const CYBERDREAM_DARK: Record<string, string> = {
-  background: '#16181a',
+  background: '#1f2937',
   foreground: '#ffffff',
   cursor: '#ffffff',
-  cursorAccent: '#16181a',
+  cursorAccent: '#1f2937',
   selectionBackground: '#3c4048',
   selectionForeground: '#ffffff',
-  black: '#16181a',
+  black: '#1f2937',
   red: '#ff6e5e',
   green: '#5eff6c',
   yellow: '#f1ff5e',
@@ -45,10 +45,10 @@ const CYBERDREAM_DARK: Record<string, string> = {
 }
 
 const CLAUDE_CODE_LIGHT: Record<string, string> = {
-  background: '#faf9f5',
+  background: '#f9fafb',
   foreground: '#141413',
   cursor: '#d97757',
-  cursorAccent: '#faf9f5',
+  cursorAccent: '#f9fafb',
   selectionBackground: '#f0d5c6',
   selectionForeground: '#141413',
   black: '#141413',
@@ -66,7 +66,7 @@ const CLAUDE_CODE_LIGHT: Record<string, string> = {
   brightBlue: '#88b3dc',
   brightMagenta: '#a99cba',
   brightCyan: '#7fb0a6',
-  brightWhite: '#faf9f5',
+  brightWhite: '#f9fafb',
 }
 
 function isDarkMode(): boolean {
@@ -138,6 +138,7 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
       fontFamily: resolveTerminalFontFamily(host),
       lineHeight: 1.2,
       scrollback: 5000,
+      allowTransparency: true,
       theme: computeXtermTheme(),
     })
     const fitAddon = new FitAddon()

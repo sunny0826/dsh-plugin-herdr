@@ -132,15 +132,16 @@ test('ariaStateLabel: returns i18n key for each display state', () => {
   assert.equal(ariaStateLabel('unknown'), 'status.unknown')
 })
 
-test('normalizeDashboardKind: supported kinds stay stable and arbitrary kinds become unknown', () => {
+test('normalizeDashboardKind: trims and lowercases, empty becomes unknown, any herdr kind is preserved', () => {
   assert.equal(normalizeDashboardKind('codex'), 'codex')
   assert.equal(normalizeDashboardKind(' PI '), 'pi')
   assert.equal(normalizeDashboardKind('claude'), 'claude')
-  assert.equal(normalizeDashboardKind('future-agent'), 'unknown')
+  assert.equal(normalizeDashboardKind('kimi'), 'kimi')
+  assert.equal(normalizeDashboardKind('future-agent'), 'future-agent')
   assert.equal(normalizeDashboardKind(undefined), 'unknown')
 })
 
-test('normalizeDashboardKindCounts: merges duplicate arbitrary kinds under unknown', () => {
+test('normalizeDashboardKindCounts: keeps each normalized kind separate', () => {
   assert.deepEqual(normalizeDashboardKindCounts([
     { kind: 'codex', value: 2 },
     { kind: 'codex', value: 3 },
@@ -149,7 +150,8 @@ test('normalizeDashboardKindCounts: merges duplicate arbitrary kinds under unkno
     { kind: ' PI ', value: 2 },
   ]), [
     { kind: 'codex', value: 5 },
-    { kind: 'unknown', value: 5 },
+    { kind: 'future-agent', value: 1 },
+    { kind: 'new-kind', value: 4 },
     { kind: 'pi', value: 2 },
   ])
 })

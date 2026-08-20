@@ -27,37 +27,9 @@ import { PaneGridView } from './pane-grid-view.tsx'
 import { PaneListView } from './pane-list-view.tsx'
 
 // 会话页 header 状态胶囊（conversation.session.header.actions）
+// 已移除顶栏「herdr 运行中」显示（需求：会话页面顶栏不再展示该胶囊）
 export function HerdrHeaderPill() {
-  // 语言订阅：切语言时胶囊文案跟随
-  void useHerdrLang()
-  const herdrMode = useHerdrMode()
-  const { snap, refresh } = useHerdrStatus()
-  const { starting, startError, start } = useHerdrStart()
-  if (!herdrMode) return null
-  const server = snap?.server
-  const running = server?.running === true
-  const stopped = snap !== null && server !== null && !running
-  const dotCls = running ? 'ok' : stopped ? 'bad' : ''
-
-  return (
-    <span className="herdr-pill">
-      <span className={"herdr-conn-dot " + dotCls} />
-      {running ? t('view.running') : stopped ? t('view.stopped') : 'herdr …'}
-      {stopped ? (
-        <button
-          disabled={starting}
-          onClick={() => {
-            void start().then(ok => {
-              if (ok) refresh()
-            })
-          }}
-        >
-          {starting ? t('view.starting') : t('view.start')}
-        </button>
-      ) : null}
-      {startError ? <span className="herdr-server-error">{startError}</span> : null}
-    </span>
-  )
+  return null
 }
 
 // ── 操作错误采集（关闭失败等，显示在工具栏下方一条横幅） ─────────────

@@ -8,11 +8,11 @@
 // React 重渲染会重写 className 抹掉标记 → attribute 观察重新打标（rAF 防抖，闪窗 ~1 帧可接受）。
 
 /** 品牌化全文（headline 容器 aria-label；与 styles.ts 的 CSS content 同源，勿直接改文案）。 */
-export const HERDR_HERO_TEXT = 'Herdr 助你探索未知之境'
+export const HERDR_HERO_TEXT = 'Herdr 助你探索未至之境'
 /** 品牌特效段（styles.ts ::before content 引用）。 */
 export const HERDR_HERO_TEXT_BRAND = 'Herdr 助你'
 /** 原样式段（styles.ts ::after content 引用）。 */
-export const HERDR_HERO_TEXT_PLAIN = '探索未知之境'
+export const HERDR_HERO_TEXT_PLAIN = '探索未至之境'
 
 /** 英文文案（styles.ts ::before/::after content 引用；对应「Herdr 助你探索未知之境」）。 */
 export const HERDR_HERO_TEXT_EN = 'Herdr helps you explore the unknown'
@@ -65,6 +65,7 @@ export function setHerdrLang(lang: string): void {
     el.setAttribute('aria-label', heroTextForLang())
   }
   patchPresetChip()
+  patchPresetIcon()
   patchPresetDesc()
 }
 
@@ -84,6 +85,36 @@ function patchPresetChip(): void {
         }
       }
     }
+  }
+}
+
+/** 新建会话「选择模式」中 Herdr 模式芯片前的图标替换为 Herdr logo（design: preset-icon）。 */
+const PRESET_ICON_CLASS = 'herdr-preset-logo'
+function patchPresetIcon(): void {
+  const candidates = Array.from(document.querySelectorAll('button, [role="button"], [role="option"]'))
+  for (const btn of candidates) {
+    if (!(btn instanceof HTMLElement)) continue
+    const text = (btn.textContent ?? '').trim()
+    const isHerdrBtn = text.includes(HERDR_PRESET_NAME_ZH) || text.includes(HERDR_PRESET_NAME_EN)
+    if (!isHerdrBtn) continue
+    if (btn.querySelector('.' + PRESET_ICON_CLASS)) continue
+    let icon: Element | null = btn.querySelector('svg')
+    if (!icon) icon = btn.querySelector('[class*="icon" i], [class*="Icon"]')
+    if (!icon) icon = btn.querySelector('img')
+    if (!icon) {
+      const first = btn.firstElementChild
+      if (first) icon = first
+    }
+    if (!icon) continue
+    let target: Element = icon
+    const parent = icon.parentElement
+    if (parent && parent !== btn && /icon/i.test(parent.className ?? '')) {
+      target = parent
+    }
+    // 避免把文本容器误判为图标（文本容器无 svg 后代但含文本；图标通常为 svg 或空 span）
+    if (target instanceof HTMLElement && target.textContent?.trim() === text) continue
+    target.classList.add(PRESET_ICON_CLASS)
+    target.setAttribute('data-herdr-preset-icon', '')
   }
 }
 
@@ -148,6 +179,21 @@ function patchHero(): void {
       textEl.setAttribute(LANG_ATTR, getHerdrLang())
     }
   }
+  updateHeroSelectedMode()
+}
+
+const HERO_ATTR = 'data-herdr-hero'
+
+function updateHeroSelectedMode(): void {
+  if (typeof document === 'undefined') return
+  const html = document.documentElement
+  // hero 阶段的预设芯片是否选中 Herdr（座位按钮在 hero 内，菜单 portal 在 hero 外可区分）
+  const isHerdrSelected = Array.from(document.querySelectorAll('[data-phase="hero"] button')).some(btn => {
+    const text = (btn.textContent ?? '').trim()
+    return text.includes(HERDR_PRESET_NAME_ZH) || text.includes(HERDR_PRESET_NAME_EN)
+  })
+  if (isHerdrSelected) html.setAttribute(HERO_ATTR, '1')
+  else html.removeAttribute(HERO_ATTR)
 }
 
 /** 启动 hero 打标（app.tsx apply 调用）；返回停止函数。 */
@@ -157,6 +203,7 @@ export function startHeroBranding(): () => void {
   }
   patchHero()
   patchPresetChip()
+  patchPresetIcon()
   patchPresetDesc()
   let raf = 0
   const observer = new MutationObserver(() => {
@@ -165,6 +212,7 @@ export function startHeroBranding(): () => void {
       raf = 0
       patchHero()
       patchPresetChip()
+      patchPresetIcon()
       patchPresetDesc()
     })
   })

@@ -1,25 +1,19 @@
-// Dashboard workspace 区（design: dashboard-redesign —— 外层 workspace 卡片 +
-// 状态堆积条 + kind chips；替代 v4 的 agent-kind Treemap）。workspace 卡片（含头部）
-// **不承载返回会话行为**——关闭 surface 由 header ✕ 按钮承担。堆积条分段由
-// client-logic 的 stackedBarSegments 计算（规范顺序、比例守恒）。
-// v5（design: dashboard-close-jump）：卡片加 ✕ 关闭（确认框显示 pane 数）+ 可展开
-// pane 列表（点击跳转 / ✕ 关闭）；自 pane / 自 workspace 隐藏 ✕。
-
-import { useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import {
   agentKindCounts,
   focusBeforeRemoval,
+  layoutTreemap,
   normalizeDashboardKind,
-  normalizeDashboardKindCounts,
   paneDisplayState,
   paneKeyboardHandlers,
-  stackedBarSegments,
 } from '../client-logic.ts'
 import { t, useHerdrLang } from './i18n.ts'
 import { StatusChips, STATUS_LABEL_KEYS } from './dashboard-summary.tsx'
 import { HerdrLogo } from './pane-list.tsx'
 import { ConfirmDialog } from './confirm-dialog.tsx'
 import type { HerdrDashboardPane, HerdrDashboardPaneRef, HerdrDashboardSnapshot, HerdrDashboardWorkspace } from './dashboard-types.ts'
+
+const TREEMAP_HEIGHT = 96
 
 function kindLabel(kind: string): string {
   const normalized = normalizeDashboardKind(kind)
@@ -37,12 +31,69 @@ function WorkspaceStatusChips({ ws }: { ws: HerdrDashboardWorkspace }) {
   return <StatusChips counts={counts} />
 }
 
-/** pane 显示名回退链：label > name > kind（非 unknown）> pane_id。 */
 function paneDisplayLabel(pane: HerdrDashboardPane): string {
   return pane.label ?? pane.name ?? (pane.kind !== 'unknown' ? pane.kind : pane.pane_id)
 }
 
-/** 单条 pane 行：状态点 + 名称 + kind + 状态 + 点击跳转 + ✕ 关闭。 */
+function WorkspaceTreemap({ ws, onPaneClick }: {
+  ws: HerdrDashboardWorkspace
+  onPaneClick?: (target: HerdrDashboardPaneRef) => void
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const measure = () => setWidth(el.clientWidth)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const kinds = agentKindCounts(ws.agents ?? []).map(k => ({ key: k.kind, value: k.value }))
+  const rects = layoutTreemap(kinds, Math.max(0, width), TREEMAP_HEIGHT)
+  if (kinds.length === 0) {
+    return <div className="herdr-tm-empty">{t('dashboard.treemapEmpty')}</div>
+  }
+  return (
+    <div ref={containerRef} className="herdr-tm" style={{ height: TREEMAP_HEIGHT }}>
+      {rects.map(r => {
+        const normalizedKind = normalizeDashboardKind(r.key)
+        const agentsOfKind = (ws.agents ?? []).filter(a => normalizeDashboardKind(a.kind) === normalizedKind)
+        const isSingle = agentsOfKind.length === 1
+        const singleAgent = agentsOfKind[0]
+        const canClick = isSingle && !!onPaneClick && !!singleAgent
+        return (
+          <div
+            key={r.key}
+            className="herdr-tm-block"
+            data-kind={normalizedKind}
+            role={canClick ? 'button' : undefined}
+            tabIndex={canClick ? 0 : undefined}
+            aria-label={`${kindLabel(r.key)} · ${r.value} (${Math.round(r.ratio * 100)}%)`}
+            style={{ left: r.x, top: r.y, width: r.width, height: r.height }}
+            title={
+              canClick
+                ? `${kindLabel(r.key)} · ${r.value} (${Math.round(r.ratio * 100)}%)`
+                : `${kindLabel(r.key)} · ${r.value} (${Math.round(r.ratio * 100)}%)${r.value > 1 ? ` · ${t('dashboard.paneMultiple', { count: r.value })}` : ''}`
+            }
+            onClick={canClick ? e => { e.stopPropagation(); onPaneClick({ pane_id: singleAgent.pane_id }) } : undefined}
+            onKeyDown={canClick ? e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                onPaneClick({ pane_id: singleAgent.pane_id })
+              }
+            } : undefined}
+          >
+            <span className="herdr-tm-label" aria-hidden>{normalizedKind}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function PaneRow({ pane, self, onPaneClick, onClosePane }: {
   pane: HerdrDashboardPane
   self: boolean
@@ -77,7 +128,6 @@ function PaneRow({ pane, self, onPaneClick, onClosePane }: {
         title={rowLabel}
         onClick={onPaneClick ? () => onPaneClick(pane) : undefined}
         onKeyDown={onPaneClick ? (e) => {
-          // 仅当焦点在行本身（而非嵌套的 ✕ 按钮）时激活，避免关闭按钮 Enter 误触跳转
           if (e.target !== e.currentTarget) return
           const action = paneKeyboardHandlers(e.key)
           if (action.trigger) {
@@ -118,7 +168,6 @@ function PaneRow({ pane, self, onPaneClick, onClosePane }: {
   )
 }
 
-/** 单个 workspace 卡片：两行头部 + 状态堆积条 + kind chips + 可展开 pane 列表 + ✕ 关闭。 */
 function WorkspaceCard({ ws, selfPaneId, hiddenPaneIds, onPaneClick, onCloseWorkspace, onClosePane }: {
   ws: HerdrDashboardWorkspace
   selfPaneId?: string | null
@@ -127,10 +176,7 @@ function WorkspaceCard({ ws, selfPaneId, hiddenPaneIds, onPaneClick, onCloseWork
   onCloseWorkspace?: (id: string) => void
   onClosePane?: (id: string) => void
 }) {
-  const segments = stackedBarSegments((ws.agents ?? []).map(agent => agent.status))
-  const kindCounts = normalizeDashboardKindCounts(agentKindCounts(ws.agents ?? []))
   const label = ws.label ?? ws.workspace_id
-  const barLabel = segments.map(seg => `${t(STATUS_LABEL_KEYS[seg.state])} ${seg.count}`).join(' · ')
   const panes = ws.panes ?? []
   const visiblePanes = hiddenPaneIds ? panes.filter(p => !hiddenPaneIds.has(p.pane_id)) : panes
   const isSelfWs = visiblePanes.some(p => p.pane_id === selfPaneId)
@@ -177,23 +223,7 @@ function WorkspaceCard({ ws, selfPaneId, hiddenPaneIds, onPaneClick, onCloseWork
           ) : null}
         </div>
       </div>
-      <div className="herdr-dash-bar" role="img" aria-label={segments.length > 0 ? `${label}: ${barLabel}` : label}>
-        {segments.map(seg => (
-          <span key={seg.state} className="herdr-dash-bar-seg" data-state={seg.state} style={{ flexGrow: seg.count }} />
-        ))}
-      </div>
-      {kindCounts.length > 0 ? (
-        <div className="herdr-dash-kind-chips">
-          {kindCounts.map(kind => (
-            <span key={kind.kind} className="herdr-dash-kind-chip">
-              <span className="herdr-dash-agent-dot" data-kind={kind.kind} aria-hidden />
-              <span>{kindLabel(kind.kind)}</span>
-              <b>{kind.value}</b>
-            </span>
-          ))}
-        </div>
-      ) : null}
-
+      <WorkspaceTreemap ws={ws} onPaneClick={onPaneClick} />
       {visiblePanes.length > 0 ? (
         <button
           type="button"
