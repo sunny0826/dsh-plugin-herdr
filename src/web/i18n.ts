@@ -195,6 +195,10 @@ export const I18N_KEYS = {
   'panel.viewerClose': { zh: '返回列表', en: 'Back to list' },
   'panel.viewerSelfDisabled': { zh: '本对话窗格不可预览', en: 'This conversation pane cannot be previewed' },
   'panel.viewerClosed': { zh: '窗格已关闭', en: 'Pane closed' },
+  // ── Herdr Tab 双布局（design: herdr-tab-dual-layout） ───────────────
+  'view.layoutWindow': { zh: '窗口模式', en: 'Window' },
+  'view.layoutList': { zh: '列表模式', en: 'List' },
+  'view.layoutHint': { zh: '切换布局', en: 'Switch layout' },
 } as const
 
 export type I18nKey = keyof typeof I18N_KEYS

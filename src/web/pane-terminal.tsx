@@ -158,22 +158,52 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
         })
       }
     })
-    // resize：observer 只本地 fit；controlling 再发给真实 PTY（80–120ms trailing debounce）
-    let rt: number | undefined
-    const doResize = () => {
-      rt = undefined
-      fitAddon.fit()
+    const fit = () => {
+      try { fitAddon.fit() } catch { /* ignore measure race */ }
+    }
+    const fitAndNotify = () => {
+      fit()
       if (ioModeRef.current === 'controlling') terminalSessionStore.resize(paneId, currentSize())
     }
-    const resizeObserver = new ResizeObserver(() => {
-      if (rt !== undefined) window.clearTimeout(rt)
-      rt = window.setTimeout(doResize, 100)
+    let notifyTimer: number | undefined
+    const scheduleFit = () => {
+      fit()
+      if (notifyTimer !== undefined) window.clearTimeout(notifyTimer)
+      notifyTimer = window.setTimeout(() => {
+        notifyTimer = undefined
+        if (ioModeRef.current === 'controlling') terminalSessionStore.resize(paneId, currentSize())
+      }, 120)
+    }
+    const ro = new ResizeObserver(() => scheduleFit())
+    ro.observe(host)
+    if (host.parentElement) ro.observe(host.parentElement)
+    const card = host.closest('.herdr-pcard, .herdr-list-detail, .herdr-terminal-maximized') as HTMLElement | null
+    if (card && card !== host.parentElement) ro.observe(card)
+    const onWindowResize = () => fitAndNotify()
+    window.addEventListener('resize', onWindowResize)
+    let raf1 = requestAnimationFrame(() => {
+      fit()
+      raf1 = requestAnimationFrame(() => fitAndNotify())
     })
-    resizeObserver.observe(host)
+    const io = new IntersectionObserver(entries => {
+      if (entries.some(e => e.isIntersecting)) fitAndNotify()
+    }, { threshold: 0 })
+    io.observe(host)
+    const onLayout = () => {
+      requestAnimationFrame(() => fitAndNotify())
+      window.setTimeout(() => fitAndNotify(), 180)
+    }
+    window.addEventListener('herdr:layout-changed', onLayout as EventListener)
+    document.addEventListener('herdr:layout-changed', onLayout as EventListener)
 
     return () => {
-      if (rt !== undefined) window.clearTimeout(rt)
-      resizeObserver.disconnect()
+      if (notifyTimer !== undefined) window.clearTimeout(notifyTimer)
+      cancelAnimationFrame(raf1)
+      ro.disconnect()
+      io.disconnect()
+      window.removeEventListener('resize', onWindowResize)
+      window.removeEventListener('herdr:layout-changed', onLayout as EventListener)
+      document.removeEventListener('herdr:layout-changed', onLayout as EventListener)
       input.dispose()
       terminal.dispose()
       terminalRef.current = null

@@ -20,9 +20,11 @@ import { HerdrServerBanner } from './server-banner.tsx'
 import { HerdrLogo } from './pane-list.tsx'
 import { useHerdrStatus, useHerdrStart } from './store.ts'
 import { useHerdrMode } from './mode.ts'
+import { getActivePane, setActivePane, useLayoutMode } from './layout-mode.ts'
 import type { HerdrAgentStatus, HerdrPaneView } from './types.ts'
-import { PaneCard } from './pane-card.tsx'
 import { PaneTerminal } from './pane-terminal.tsx'
+import { PaneGridView } from './pane-grid-view.tsx'
+import { PaneListView } from './pane-list-view.tsx'
 
 // 会话页 header 状态胶囊（conversation.session.header.actions）
 export function HerdrHeaderPill() {
@@ -70,13 +72,11 @@ export function HerdrView() {
 }
 
 export function HerdrPanesView() {
-  // 语言订阅：切语言时工具栏/空态/确认文案跟随
   void useHerdrLang()
   const herdrMode = useHerdrMode()
   const { snap, error, refresh } = useHerdrStatus()
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null)
   const maximizedTriggerRef = useRef<HTMLElement | null>(null)
-  // 拖拽状态：dragId（被拖项）、overId + insertPos（目标卡片与插入方向，渲染指示线）
   const [dragId, setDragId] = useState<string | null>(null)
   const [overId, setOverId] = useState<string | null>(null)
   const [insertPos, setInsertPos] = useState<'before' | 'after' | null>(null)
@@ -193,6 +193,45 @@ export function HerdrPanesView() {
     () => visibleGroups.flatMap(g => orderedByWs.get(g.workspace.workspace_id) ?? g.panes),
     [visibleGroups, orderedByWs],
   )
+
+  // ── 双布局模式（按 workspace 隔离，默认 window 兼容现行为） ─────────────
+  const [layoutMode, setLayoutMode] = useLayoutMode(wsId || undefined)
+  const [activePaneId, setActivePaneIdState] = useState<string | null>(null)
+  const selectActive = useCallback((paneId: string) => {
+    setActivePaneIdState(paneId)
+    if (wsId) setActivePane(wsId, paneId)
+  }, [wsId])
+  useEffect(() => {
+    if (!wsId || allPanes.length === 0) return
+    const stored = getActivePane(wsId)
+    if (stored && allPanes.some(p => p.pane_id === stored)) {
+      setActivePaneIdState(stored)
+      return
+    }
+    // fallback: 首 pane 且更新记忆
+    const fallback = allPanes[0]?.pane_id ?? null
+    if (fallback) {
+      setActivePaneIdState(fallback)
+      setActivePane(wsId, fallback)
+    }
+  }, [wsId, allPanes])
+  // 外部聚焦事件同步到列表选中
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const paneId = (e as CustomEvent<{ paneId: string }>).detail?.paneId
+      if (!paneId) return
+      if (layoutMode === 'list' && allPanes.some(p => p.pane_id === paneId)) {
+        selectActive(paneId)
+      }
+    }
+    document.addEventListener('herdr:focus-pane', handler)
+    return () => document.removeEventListener('herdr:focus-pane', handler)
+  }, [layoutMode, allPanes, selectActive])
+  useEffect(() => {
+    const ev = new CustomEvent('herdr:layout-changed')
+    window.dispatchEvent(ev)
+    document.dispatchEvent(ev)
+  }, [layoutMode])
 
   const paneCount = allPanes.length
   const wsCount = visibleGroups.length
@@ -362,6 +401,26 @@ export function HerdrPanesView() {
           {t('view.stats', { ws: wsCount, panes: paneCount, agents: agentCount })}
         </span>
         <span className="herdr-head-actions">
+          <span className="herdr-layout-switch" role="tablist" aria-label={t('view.layoutHint')}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={layoutMode === 'window'}
+              className={layoutMode === 'window' ? 'active' : undefined}
+              onClick={() => setLayoutMode('window')}
+            >
+              {t('view.layoutWindow')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={layoutMode === 'list'}
+              className={layoutMode === 'list' ? 'active' : undefined}
+              onClick={() => setLayoutMode('list')}
+            >
+              {t('view.layoutList')}
+            </button>
+          </span>
           <Button variant="outline" size="sm" onClick={refresh}>{t('view.refresh')}</Button>
         </span>
       </div>
@@ -389,29 +448,39 @@ export function HerdrPanesView() {
           {selfPaneId ? t('panel.noPane') : t('panel.fetchingPane')}
         </div>
       ) : !maximizedPaneId ? (
-        <div className="herdr-pane-grid">
-          {allPanes.map(pane => (
-            <PaneCard
-              key={pane.pane_id}
-              pane={pane}
-              agent={agentByPane.get(pane.pane_id)}
-              self={pane.pane_id === selfPaneId}
-              onClose={() => onClosePane(pane.pane_id)}
-              onRename={label => onRenamePane(pane.pane_id, label)}
-              onMaximize={(triggerEl) => {
-                maximizedTriggerRef.current = triggerEl
-                setMaximizedPaneId(pane.pane_id)
-              }}
-              dragging={dragId === pane.pane_id}
-              insert={overId === pane.pane_id ? insertPos : null}
-              onHandleDragStart={e => onHandleDragStart(e, pane.pane_id)}
-              onHandleDragEnd={onHandleDragEnd}
-              onCardDragOver={e => onCardDragOver(e, pane.pane_id, wsId)}
-              onCardDrop={e => onCardDrop(e, pane.pane_id, wsId)}
-              onCardDragLeave={onCardDragLeave}
-            />
-          ))}
-        </div>
+        layoutMode === 'list' ? (
+          <PaneListView
+            panes={allPanes}
+            agentByPane={agentByPane}
+            selfPaneId={selfPaneId}
+            activePaneId={activePaneId}
+            onSelect={selectActive}
+            onClosePane={onClosePane}
+            onRenamePane={onRenamePane}
+            wsId={wsId}
+          />
+        ) : (
+          <PaneGridView
+            panes={allPanes}
+            agentByPane={agentByPane}
+            selfPaneId={selfPaneId}
+            wsId={wsId}
+            dragId={dragId}
+            overId={overId}
+            insertPos={insertPos}
+            onClosePane={onClosePane}
+            onRenamePane={onRenamePane}
+            onMaximize={(paneId, triggerEl) => {
+              maximizedTriggerRef.current = triggerEl
+              setMaximizedPaneId(paneId)
+            }}
+            onHandleDragStart={onHandleDragStart}
+            onHandleDragEnd={onHandleDragEnd}
+            onCardDragOver={onCardDragOver}
+            onCardDrop={onCardDrop}
+            onCardDragLeave={onCardDragLeave}
+          />
+        )
       ) : null}
 
       {/* 最大化终端视图（design: pane-interactive-terminal §5）— 替换列表 */}
