@@ -75,5 +75,5 @@ test('config schema fills defaults', () => {
   assert.equal(ok.value.timeoutMs, 30000)
   assert.equal(ok.value.allowBackground, false)
   assert.equal(ok.value.reportState, true)
-  assert.equal(ok.value.events.enabled, false)
+  assert.equal(ok.value.events.enabled, true)
 })

@@ -17,8 +17,7 @@ import { t, useHerdrLang } from './i18n.ts'
 import { useFloatingDrag, SNAP } from './floating-drag.ts'
 import { HERDR_LOGO_PATH_D } from './logo-path.ts'
 import { useHerdrMode } from './mode.ts'
-import { getSessionId } from './navigation.ts'
-import { fetchSelfPaneId } from './session-pane.ts'
+import { selfPaneStore, useSelfPaneId } from './self-pane-store.ts'
 import { useHerdrStatus, useGlobalDashboardOpen } from './store.ts'
 import { PaneTerminal } from './pane-terminal.tsx'
 import type { HerdrAgentStatus } from './types.ts'
@@ -54,12 +53,10 @@ export function HerdrPaneList() {
   const { snap, error } = useHerdrStatus()
   const [collapsed, setCollapsed] = useState(false)
   const [collapsedWs, setCollapsedWs] = useState<Set<string>>(new Set())
-  const [selfPaneId, setSelfPaneId] = useState<string | null>(null)
+  const selfPaneIdRaw = useSelfPaneId()
+  const selfPaneId = selfPaneIdRaw ?? null
+  const paneMisses = selfPaneStore.getMisses(selfPaneStore.getCurrentSessionId() ?? '')
   const [inSession, setInSession] = useState(false)
-  // 连续未命中计数：查询多次仍 null 才判定「未绑定」（bind 异步完成前的短暂空窗不算）
-  const [paneMisses, setPaneMisses] = useState(0)
-  const lastSessionId = useRef<string | undefined>(undefined)
-  const selfPaneIdRef = useRef<string | null>(null)
   const prevStatus = useRef<string | undefined>(undefined)
   const panelRef = useRef<HTMLDivElement | null>(null)
   const minRef = useRef<HTMLButtonElement | null>(null)
@@ -139,30 +136,6 @@ export function HerdrPaneList() {
     const timer = setInterval(check, 1000)
     return () => clearInterval(timer)
   }, [])
-
-  // 当前会话 id（sessions 服务；变化时重置查询）。
-  // 同一会话下持续查询直到命中：bind 在 agent/created 或首个模型请求（兜底）时
-  // 才完成，首次查询可能早于绑定——只查一次会导致面板永远停留在空态。
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const id = getSessionId()
-      if (id !== lastSessionId.current) {
-        lastSessionId.current = id
-        setSelfPaneId(null)
-        setPaneMisses(0)
-        return
-      }
-      if (!id || selfPaneIdRef.current) return
-      void fetchSelfPaneId(id).then(paneId => {
-        setSelfPaneId(paneId)
-        if (!paneId) setPaneMisses(m => m + 1)
-      })
-    }, 1000)
-    return () => clearInterval(timer)
-  }, [])
-  useEffect(() => {
-    selfPaneIdRef.current = selfPaneId
-  }, [selfPaneId])
 
   // 自动展开：本对话 pane 状态 working 边沿（非 working → working 且处于折叠）
   const selfStatus = snap?.agents.find(a => a.pane_id === selfPaneId)?.status

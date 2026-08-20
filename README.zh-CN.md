@@ -91,10 +91,12 @@ dsh plugin --profile web remove dsh-plugin-herdr
 | `session` | string | – | herdr 会话名（`HERDR_SESSION`） |
 | `timeoutMs` | number | 30000 | 单条命令超时 |
 | `allowBackground` | boolean | `false` | 是否暴露 `run_in_background` 参数（pane run） |
-| `events.enabled` | boolean | `false` | 订阅 Herdr 事件 |
+| `events.enabled` | boolean | `true` | 订阅 Herdr 事件（push 优先、poll 兜底） |
 | `events.maxReconnectMs` | number | 30000 | 事件订阅重连上限 |
 | `reportState` | boolean | `true` | 在 pane 内向 Herdr 上报 DSH→Herdr 状态（`HERDR_ENV`） |
 | `projectRoot` | string | – | 服务端过滤用的项目目录；默认 `process.cwd()` |
+
+新增面板端点：`GET /herdr-topology?lite=1` 返回 `{server, topology, filter, stale}`（不含 `agents[].output` 的轻量轮询）；`GET /herdr-agents/output?pane_ids=...` 按需拉取 pane 输出（懒加载，支持 `lines`/`format` 参数）。
 
 预设配置（`presets/herdr/agent.cordis.yml` 的 `herdr-session-mode`）：
 
@@ -231,6 +233,8 @@ herdr_pane_read    {pane_id: '<pane_id>'}              # 读取结果
 | 插件加载报「requires a resolvable socket path」 | 不支持 Windows；POSIX 下配置 `socketPath`/`HERDR_SOCKET_PATH` |
 | 没有「Herdr 模式」预设 | 检查 `$DSH_HOME/.agent-presets/herdr/` 是否存在（插件加载时会重建） |
 | 面板一直显示「正在获取本会话 pane…」 | 会话创建后切到 herdr 模式或服务重启过；首个模型请求会触发兜底绑定——发一条消息，或重启 profile |
+| Panel stuck on "正在获取本会话 pane…" → 已由 selfPaneStore 退避单例接管，切会话后 1→2→4s 自动重查，无需手动重启 | 已由 `selfPaneStore` 单例退避接管，切会话后 1→2→4s 自动重查，无需手动重启 |
+| No Herdr events / stale 提示 → 检查 events.enabled 默认为 true，` 和 `GET /herdr-events` SSE 是否被代理缓冲（`X-Accel-Buffering:no`） | 检查 `events.enabled` 默认为 `true`，且 `GET /herdr-events` SSE 是否被代理缓冲（`X-Accel-Buffering:no`） |
 | `herdr_agent_start` 报 `agent_pane_busy` | 瞬时状态：新 split 的 pane shell 尚在初始化；工具会自动重试——稍后再看 |
 
 ## 开发

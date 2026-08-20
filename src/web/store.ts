@@ -1,29 +1,219 @@
-// 数据获取：模块级共享轮询（多组件订阅同一数据源；逻辑见 client-logic.ts）。
-// 与拆分前的 client.tsx 完全一致：statusStore 是本模块的模块级单例，
-// 所有订阅方（HerdrView / HerdrHeaderPill / HerdrPaneList）
-// 共享同一数据源——移入独立模块后单例仍位于本文件，行为不变。
-
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createGlobalDashboardStore, createStatusStore, parseStartResponse } from '../client-logic.ts'
+import type { SseEvent } from '../client-logic.ts'
 import type { HerdrStatusSnapshot } from './types.ts'
 import type { HerdrDashboardSnapshot } from './dashboard-types.ts'
+import { getHerdrMode, useHerdrMode } from './mode.ts'
 
-// 会话聚焦（design: herdr-mode-gating）：Tab/面板都只显示本会话专属 workspace，
-// 不再需要 project/all scope 切换——固定 project 轮询即可（本会话 workspace 有
-// 服务端 self-pane 豁免，恒不被过滤）。
 async function fetchStatus(signal: AbortSignal): Promise<HerdrStatusSnapshot> {
   const resp = await fetch('/herdr-status', { signal })
   if (!resp.ok) throw new Error(`herdr-status HTTP ${resp.status}`)
   return (await resp.json()) as HerdrStatusSnapshot
 }
 
-// v4 需求 2：marker 原生 DOM 按钮订阅 statusStore（单飞 /herdr-status 轮询，与
-// 会话 UI 共享同一数据源与单飞请求；marker 不另起全量轮询——P1-1 定案）。
-// 取舍：marker 常驻订阅使 statusStore 页面级活跃（2s 单飞轮询，含 agents 输出）；
-// 若未来需减负可评估服务端轻量 server 端点，本次遵循「不新增端点除非必要」。
-export const statusStore = createStatusStore<HerdrStatusSnapshot>({ fetch: fetchStatus })
+export function statusIntervalFor(snap: HerdrStatusSnapshot | null): number {
+  const agents = (snap as HerdrStatusSnapshot | null)?.agents ?? []
+  const hasWorking = agents.some(a => a.status === 'working' || a.status === 'blocked')
+  if (hasWorking) return 1500
+  if (agents.length === 0) return 10000
+  const allIdleDone = agents.every(a => a.status === 'idle' || a.status === 'done')
+  if (allIdleDone) return 5000
+  const allUnknown = agents.every(a => !a.status || a.status === 'unknown')
+  if (allUnknown) return 10000
+  return 2000
+}
 
-export function useHerdrStatus(): { snap: HerdrStatusSnapshot | null; error: string | null; refresh: () => void } {
+export const globalDashboardStore = createGlobalDashboardStore()
+
+function shouldPauseStatus(): boolean {
+  const hidden = typeof document !== 'undefined' ? document.hidden : false
+  if (hidden) return true
+  const herdrMode = getHerdrMode()
+  const dashboardOpen = globalDashboardStore.getOpen()
+  return !herdrMode && !dashboardOpen
+}
+
+export function patchHerdrStatus(snap: HerdrStatusSnapshot, event: SseEvent): HerdrStatusSnapshot {
+  switch (event.type) {
+    case 'topology': {
+      const topo = event.topology as HerdrStatusSnapshot['topology']
+      const filter = event.filter as HerdrStatusSnapshot['filter']
+      if (!topo) return snap
+      return { ...snap, topology: topo, ...(filter ? { filter } : {}), updated_at: Date.now() }
+    }
+    case 'agent_status': {
+      const agents = snap.agents ?? []
+      const now = Date.now()
+      const idx = agents.findIndex(a => a.pane_id === event.pane_id)
+      let nextAgents: HerdrStatusSnapshot['agents']
+      if (idx >= 0) {
+        const prev = agents[idx]!
+        if (prev.status === event.status && prev.agent === event.agent && prev.message === event.message) return snap
+        nextAgents = agents.slice()
+        nextAgents[idx] = { ...prev, agent: event.agent || prev.agent, status: event.status, ...(event.message !== undefined ? { message: event.message } : { message: prev.message }), updated_at: now }
+      } else {
+        nextAgents = agents.concat([{ pane_id: event.pane_id, agent: event.agent, status: event.status, ...(event.message ? { message: event.message } : {}), output: '', updated_at: now }])
+      }
+      return { ...snap, agents: nextAgents, updated_at: now }
+    }
+    case 'heartbeat': {
+      return { ...snap, stale: event.stale, last_error: event.last_error, updated_at: Date.now() }
+    }
+    case 'output':
+      return snap
+    default:
+      return snap
+  }
+}
+
+export function openHerdrEvents(signal: AbortSignal, onEvent: (e: SseEvent) => void): { close(): void } {
+  let closed = false
+  let lastRevision: number | null = null
+  let curController: AbortController | null = null
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
+  const abortAll = (): void => {
+    closed = true
+    if (curController) try { curController.abort() } catch { /* ignore */ }
+    if (retryTimer) clearTimeout(retryTimer)
+    retryTimer = null
+  }
+  signal.addEventListener('abort', abortAll, { once: true })
+  const emitParsed = (rawEvent: string, rawData: string, rawId: string): void => {
+    if (!rawData) return
+    try {
+      const data = JSON.parse(rawData) as Record<string, unknown>
+      if (rawEvent === 'output') {
+        const pane_id = String((data as { pane_id?: string }).pane_id ?? '')
+        const revision = typeof (data as { revision?: number }).revision === 'number' ? (data as { revision: number }).revision : (rawId && /^\d+$/.test(rawId) ? Number(rawId) : 0)
+        if (pane_id) {
+          if (Number.isSafeInteger(revision)) lastRevision = revision
+          onEvent({ type: 'output', pane_id, revision, id: rawId } as SseEvent)
+        }
+      } else if (rawEvent === 'agent_status') {
+        const pane_id = String((data as { pane_id?: string }).pane_id ?? '')
+        if (pane_id) {
+          onEvent({ type: 'agent_status', pane_id, agent: String((data as { agent?: string }).agent ?? ''), status: String((data as { status?: string }).status ?? 'unknown'), message: (data as { message?: string }).message, workspace_id: (data as { workspace_id?: string }).workspace_id } as SseEvent)
+        }
+      } else if (rawEvent === 'topology') {
+        onEvent({ type: 'topology', topology: (data as { topology?: unknown }).topology, filter: (data as { filter?: unknown }).filter } as SseEvent)
+      } else if (rawEvent === 'heartbeat') {
+        onEvent({ type: 'heartbeat', stale: Boolean((data as { stale?: boolean }).stale), last_error: (data as { last_error?: string | null }).last_error ?? null } as SseEvent)
+      }
+    } catch { /* ignore */ }
+  }
+  const connect = async (): Promise<void> => {
+    if (closed || signal.aborted) return
+    curController = new AbortController()
+    const linkSignal = curController.signal
+    const onOuterAbort = (): void => { try { curController!.abort() } catch { /* ignore */ } }
+    signal.addEventListener('abort', onOuterAbort, { once: true })
+    const url = lastRevision != null ? `/herdr-events?after_revision=${lastRevision}` : '/herdr-events'
+    try {
+      const resp = await fetch(url, { signal: linkSignal, headers: { Accept: 'text/event-stream' } })
+      if (!resp.ok || !resp.body) throw new Error(`sse ${resp.status}`)
+      const reader = (resp.body as ReadableStream<Uint8Array>).getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      let curEvent = ''
+      let curData = ''
+      let curId = ''
+      const flush = (): void => {
+        if (curData !== '' || curEvent !== '') {
+          emitParsed(curEvent, curData, curId)
+          curEvent = ''
+          curData = ''
+          curId = ''
+        }
+      }
+      while (true) {
+        if (linkSignal.aborted || signal.aborted) break
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const parts = buf.split('\n')
+        buf = parts.pop() ?? ''
+        for (const raw of parts) {
+          const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+          if (line === '') { flush(); continue }
+          if (line.startsWith(':')) continue
+          if (line.startsWith('retry:')) continue
+          if (line.startsWith('id:')) {
+            curId = line.slice(3).trim()
+            if (curId && /^\d+$/.test(curId)) lastRevision = Number(curId)
+            continue
+          }
+          if (line.startsWith('event:')) { curEvent = line.slice(6).trim(); continue }
+          if (line.startsWith('data:')) { curData = line.slice(5).trim(); continue }
+        }
+      }
+      if (!closed && !signal.aborted) retryTimer = setTimeout(() => { void connect() }, 3000)
+    } catch {
+      if (!closed && !signal.aborted) retryTimer = setTimeout(() => { void connect() }, 3000)
+    } finally {
+      signal.removeEventListener('abort', onOuterAbort)
+    }
+  }
+  void connect()
+  return { close: abortAll }
+}
+
+function sseOpen(signal: AbortSignal, onEvent: (e: SseEvent) => void): { close(): void } {
+  const wrapped = (ev: SseEvent): void => {
+    onEvent(ev)
+  }
+  return openHerdrEvents(signal, wrapped)
+}
+
+export async function fetchPaneOutputs(paneIds: string[], lines = 40): Promise<Map<string, string>> {
+  if (paneIds.length === 0) return new Map()
+  try {
+    const ids = paneIds.map(id => encodeURIComponent(id)).join(',')
+    const url = `/herdr-agents/output?pane_ids=${ids}&lines=${encodeURIComponent(String(lines))}`
+    const resp = await fetch(url)
+    if (!resp.ok) return new Map()
+    const body = (await resp.json()) as { outputs?: Array<{ pane_id: string; text?: string; truncated?: boolean; error?: string }> }
+    const map = new Map<string, string>()
+    for (const o of body.outputs ?? []) {
+      if (o.pane_id && typeof o.text === 'string') map.set(o.pane_id, o.text)
+    }
+    return map
+  } catch {
+    return new Map()
+  }
+}
+
+export async function fetchPaneOutputsDetailed(
+  paneIds: string[],
+  lines = 40,
+): Promise<Map<string, { text: string; truncated: boolean }>> {
+  if (paneIds.length === 0) return new Map()
+  try {
+    const ids = paneIds.map(id => encodeURIComponent(id)).join(',')
+    const url = `/herdr-agents/output?pane_ids=${ids}&lines=${encodeURIComponent(String(lines))}`
+    const resp = await fetch(url)
+    if (!resp.ok) return new Map()
+    const body = (await resp.json()) as { outputs?: Array<{ pane_id: string; text?: string; truncated?: boolean; error?: string }> }
+    const map = new Map<string, { text: string; truncated: boolean }>()
+    for (const o of body.outputs ?? []) {
+      if (o.pane_id && typeof o.text === 'string') map.set(o.pane_id, { text: o.text, truncated: Boolean(o.truncated) })
+    }
+    return map
+  } catch {
+    return new Map()
+  }
+}
+
+export const statusStore = createStatusStore<HerdrStatusSnapshot>({
+  fetch: fetchStatus,
+  intervalFor: statusIntervalFor,
+  pauseWhen: shouldPauseStatus,
+  sse: { open: sseOpen },
+  onSseEvent: patchHerdrStatus,
+})
+
+export function useHerdrStatus(): { snap: HerdrStatusSnapshot | null; error: string | null; stale: boolean; refresh: () => void; diagnostics: { inflight: number; currentInterval: number | null; paused: boolean } } {
+  const herdrMode = useHerdrMode()
+  const globalOpen = useGlobalDashboardOpen()
   const [snap, setSnap] = useState<HerdrStatusSnapshot | null>(statusStore.getSnap())
   const [error, setError] = useState<string | null>(statusStore.getError())
   useEffect(() => {
@@ -35,10 +225,31 @@ export function useHerdrStatus(): { snap: HerdrStatusSnapshot | null; error: str
     update()
     return unsubscribe
   }, [])
+  const prevPausedRef = useRef<boolean | null>(null)
+  useEffect(() => {
+    const paused = (typeof document !== 'undefined' ? document.hidden : false) || (!herdrMode && !globalOpen)
+    if (prevPausedRef.current === true && !paused) {
+      statusStore.refresh()
+    }
+    prevPausedRef.current = paused
+  }, [herdrMode, globalOpen])
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const onVis = () => {
+      if (!document.hidden) {
+        const paused = !getHerdrMode() && !globalDashboardStore.getOpen()
+        if (!paused) statusStore.refresh()
+      }
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
   const refresh = useCallback(() => {
     statusStore.refresh()
   }, [])
-  return { snap, error, refresh }
+  const stale = (snap as HerdrStatusSnapshot | null)?.stale ?? false
+  const diagnostics = statusStore.getDiagnostics()
+  return { snap, error, stale, refresh, diagnostics }
 }
 
 // ---------------------------------------------------------------------------
@@ -81,10 +292,7 @@ export function useHerdrDashboard(): { snap: HerdrDashboardSnapshot | null; erro
 // 导出单例供原生 DOM marker controller 订阅（P1-1：open/close 同步 aria-pressed）。
 // ---------------------------------------------------------------------------
 
-export const globalDashboardStore = createGlobalDashboardStore()
-
 export function useGlobalDashboardOpen(): boolean {
-  // useSyncExternalStore：getSnapshot 返回原始值，无引用稳定性问题
   return useSyncExternalStore(globalDashboardStore.subscribe, globalDashboardStore.getOpen)
 }
 
@@ -143,7 +351,7 @@ export function sendPaneInput(paneId: string, input: { text?: string; keys?: str
     const body = await resp.json() as { ok?: boolean; error?: string }
     if (!body.ok) throw new Error(body.error ?? `herdr-pane-input HTTP ${resp.status}`)
   })
-  inputQueues.set(paneId, next.catch(() => {})) // 队列不因单次失败断裂
+  inputQueues.set(paneId, next.catch(() => {}))
   return next
 }
 
@@ -177,9 +385,17 @@ export async function fetchTerminalBootstrap(
 export interface TerminalChangeResult {
   changed: boolean
   revision: number
+  /** 增量帧（base64 编码的 ANSI bytes），存在时可直接追加而无需全量 bootstrap。 */
+  bytes?: string
+  /** 兼容别名：服务端可能以 delta 字段返回增量。 */
+  delta?: string
+  /** 增量帧是否为全量 full（需 rebase 清屏）。 */
+  full?: boolean
 }
 
-/** 等待 pane revision 变化；服务端由 events.wait 驱动，超时表示当前无新输出。 */
+/** 等待 pane revision 变化；服务端由 events.wait 驱动，超时表示当前无新输出。
+ *  当服务端在 pane_output_changed 事件中附带增量 bytes/delta 时直接返回 Delta，
+ *  调用方可 `rebaseTerminalFrame` 后 `terminal.write` 追加，无需全量 `fetchTerminalBootstrap`。 */
 export async function waitForTerminalChange(
   paneId: string,
   afterRevision: number,
@@ -189,10 +405,13 @@ export async function waitForTerminalChange(
   url.searchParams.set('pane_id', paneId)
   url.searchParams.set('after_revision', String(afterRevision))
   const resp = await fetch(url.toString(), { signal })
-  const body = await resp.json() as { ok?: boolean; changed?: boolean; revision?: number; error?: string }
+  const body = await resp.json() as { ok?: boolean; changed?: boolean; revision?: number; bytes?: string; delta?: string; full?: boolean; error?: string }
   if (!body.ok) throw new Error(body.error ?? `terminal-wait HTTP ${resp.status}`)
   return {
     changed: body.changed === true,
     revision: typeof body.revision === 'number' ? body.revision : afterRevision,
+    ...(typeof body.bytes === 'string' ? { bytes: body.bytes } : {}),
+    ...(typeof body.delta === 'string' ? { delta: body.delta } : {}),
+    ...(typeof body.full === 'boolean' ? { full: body.full } : {}),
   }
 }

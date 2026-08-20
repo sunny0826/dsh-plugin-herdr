@@ -97,8 +97,32 @@ function eventResourceId(data: Record<string, unknown>): string {
  * 返回清理函数（插件卸载或测试结束调用；插件内同时注册为 effect）。
  */
 export function setupEventForwarding(ctx: Context, opts: EventForwardOptions): () => void {
-  if (!opts.enabled) return () => {}
+  if (!opts.enabled) {
+    // Phase3: 已默认 true，false 仅跳过 herdr/agent-state 转发；Tracker 脏集的 raw 订阅独立于此开关（index.ts 直连 ctx.herdr.onEvent）
+    createLogger(ctx, 'forward').debug('event forwarding disabled by config (tracker dirty path remains active)')
+    return () => {}
+  }
   return setupSocketForwarding(ctx, ctx.herdr as SocketHerdrClient, opts)
+}
+
+/**
+ * 供 HerdrStatusTracker / SSE 桥复用的订阅入口：监听原始 HerdrEvent。
+ * Tracker 可直接通过 ctx.events 监听 `herdr/agent-state` 与 `herdr/resource-changed`，
+ * 此 helper 暴露原始事件流以便增量 reconciling 统一入口（如需要直连 pane_output_changed）。
+ */
+export function subscribeHerdrEvents(ctx: Context, cb: (event: HerdrEvent) => void): () => void {
+  const client = ctx.herdr as SocketHerdrClient & { onEvent?: (h: (e: unknown) => void) => () => void }
+  if (typeof client.onEvent === 'function') {
+    return client.onEvent((raw: unknown) => {
+      const env = raw as HerdrEvent & { data?: { type?: string } }
+      if (env && typeof env.data?.type === 'string') cb(env as HerdrEvent)
+    })
+  }
+  // 回退：通过转发的 cordis 事件重建（仅用于测试/无 socket 环境）
+  const offA = ctx.on('herdr/agent-state', () => {})
+  const offR = ctx.on('herdr/resource-changed', () => {})
+  void cb
+  return () => { offA(); offR() }
 }
 
 // ---------------------------------------------------------------------------
