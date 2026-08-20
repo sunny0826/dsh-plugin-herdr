@@ -140,6 +140,7 @@ export const I18N_KEYS = {
   'dashboard.showAllAgents': { zh: '显示全部', en: 'Show all' },
   'dashboard.collapseAgents': { zh: '收起', en: 'Collapse' },
   'dashboard.agentUnnamed': { zh: '未命名代理', en: 'Unnamed agent' },
+  'dashboard.treemapEmpty': { zh: '该工作区暂无代理', en: 'No agents in this workspace' },
   // ── Treemap 块点击跳转（pane → 对应会话 Herdr Tab） ──────────────────
   'dashboard.paneMultiple': { zh: '该分类下有 {count} 个窗格，无法定位具体窗格', en: '{count} panes in this group, cannot locate a specific pane' },
   // ── 五态展示模型（design: herdr-tab-redesign §4.3） ──────────────────
