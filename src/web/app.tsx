@@ -5,6 +5,7 @@ import { HerdrView, HerdrHeaderPill } from './herdr-view.tsx'
 import { setSessionIdReader, setSessionOpener } from './navigation.ts'
 import { HerdrPaneList } from './pane-list.tsx'
 import { startModeTracking, type SessionListLike } from './mode.ts'
+import { startSessionListBranding } from './session-list-branding.ts'
 import { startTabController } from './tab-controller.ts'
 import { startHeroBranding, setHerdrLang } from './hero-branding.ts'
 import { SidebarButtonHost } from './global-dashboard.tsx'
@@ -36,6 +37,7 @@ interface SessionsApiLike {
 export function apply(ctx: ClientCtx) {
   // 模式跟踪：当前会话 agentPreset === 'herdr' → herdr 模式（Tab/面板/胶囊门控的事实源）
   let stopModeTracking: (() => void) | null = null
+  let stopSessionListBranding: (() => void) | null = null
   ctx.inject(['sessions'], (scope: unknown) => {
     const sessions = (scope as { sessions?: SessionsApiLike }).sessions
     setSessionIdReader(() => sessions?.list?.getSnapshot?.()?.current)
@@ -44,6 +46,7 @@ export function apply(ctx: ClientCtx) {
     }
     if (sessions?.list) {
       stopModeTracking = startModeTracking(sessions.list)
+      stopSessionListBranding = startSessionListBranding(sessions.list)
     }
   })
   // herdr Tab 打标：DOM 显隐门控 + logo 样式锚点（观察 tablist 渲染与 React 重渲染）
@@ -62,6 +65,8 @@ export function apply(ctx: ClientCtx) {
   ctx.effect(() => () => {
     stopModeTracking?.()
     stopModeTracking = null
+    stopSessionListBranding?.()
+    stopSessionListBranding = null
     stopTabController()
     stopHeroBranding()
     stopLangTracking?.()
