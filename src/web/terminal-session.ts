@@ -75,6 +75,10 @@ export class BrowserTerminalSessionStore {
     return this.panes.get(paneId)
   }
 
+  getRefCount(paneId: string): number {
+    return this.panes.get(paneId)?.refcount ?? 0
+  }
+
   subscribe(paneId: string, cb: Listener): () => void {
     if (!this.listeners.has(paneId)) this.listeners.set(paneId, new Set())
     this.listeners.get(paneId)!.add(cb)

@@ -86,7 +86,7 @@ export const Config: Schema<Config> = Schema.object({
   timeoutMs: Schema.number().min(1000).max(600000).default(30000),
   allowBackground: Schema.boolean().default(false),
   events: Schema.object({
-    enabled: Schema.boolean().default(false),
+    enabled: Schema.boolean().default(true),
     // CA-014：重连退避上限有边界（1s–10min），非法配置加载即失败
     maxReconnectMs: Schema.number().min(1000).max(600000).default(30000),
   }),

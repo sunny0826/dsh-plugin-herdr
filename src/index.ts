@@ -4,8 +4,9 @@ import { guardLocalRequest, requireMethod } from './http-guard.ts'
 import { createLogger } from './log.ts'
 import { setupEventForwarding } from './events/forward.ts'
 import { setupStateReporting } from './events/state-report.ts'
-import { HerdrStatusTracker, startHerdrServer } from './status.ts'
+import { HerdrStatusTracker, OUTPUT_CAP, startHerdrServer } from './status.ts'
 import { HerdrDashboardTracker } from './dashboard.ts'
+import { truncateAnsiTail } from './terminal-ansi.ts'
 import { getBindingRegistry, getBoundPaneIds, getBoundWorkspaceIds, sessionIdFromTokens } from './binding-registry.ts'
 import { registerHerdrSkill } from './skill.ts'
 import { registerSnapshot } from './tools/snapshot.ts'
@@ -121,6 +122,9 @@ export function apply(ctx: Context, config: ConfigType) {
   let offTerminalBootstrapRoute: (() => void) | null = null
   let offTerminalWaitRoute: (() => void) | null = null
   let offDashboardRoute: (() => void) | null = null
+  let offTopologyRoute: (() => void) | null = null
+  let offAgentsOutputRoute: (() => void) | null = null
+  let offSseRoute: (() => void) | null = null
   let offTerminalSessionRoutes: (() => void) | null = null
   // Pane 终端 Observer/Controller（design: pane-terminal-session-state-machine §6）
   const terminalSessionCfg = resolveTerminalSessionConfig(config)
@@ -219,6 +223,79 @@ export function apply(ctx: Context, config: ConfigType) {
         if (!guard(res, req, 'GET')) return
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify(dashboardTracker.snapshot()))
+      },
+    })
+    // Lite topology: GET /herdr-topology?lite=1 (无 agents output，体积 < /herdr-status 30%)
+    offTopologyRoute = webServer.register({
+      kind: 'exact',
+      path: '/herdr-topology',
+      handler: (req: unknown, res: Res) => {
+        if (!guard(res, req, 'GET')) return
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        const snap = tracker.snapshot('project')
+        // lite=1 与 lite=0|缺省 均返回轻量结构（兼容）：不含 agents[].output
+        // 兼容旧客户端：即使 lite=0 也保持同样轻量，避免 8k*N 带宽浪费
+        void new URL((req as Req).url ?? '/', 'http://x').searchParams.get('lite')
+        res.end(JSON.stringify({
+          server: snap.server,
+          topology: snap.topology,
+          filter: snap.filter,
+          stale: snap.stale,
+          last_error: snap.last_error,
+          updated_at: snap.updated_at,
+          poll_latency_ms: snap.poll_latency_ms ?? tracker.getDiagnostics().pollLatencyMs,
+        }))
+      },
+    })
+    // 按需输出：GET /herdr-agents/output?pane_ids=w1:p1,w1:p2&lines=40&format=ansi|plain
+    offAgentsOutputRoute = webServer.register({
+      kind: 'exact',
+      path: '/herdr-agents/output',
+      handler: async (req: unknown, res: Res) => {
+        if (!guard(res, req, 'GET')) return
+        const url = new URL((req as Req).url ?? '/', 'http://x')
+        const rawIds = url.searchParams.get('pane_ids') ?? url.searchParams.get('paneIds') ?? ''
+        const paneIds = rawIds.split(',').map(s => s.trim()).filter(Boolean)
+        if (paneIds.length === 0) {
+          reject(res, 400, 'pane_ids query parameter is required (comma-separated)')
+          return
+        }
+        const linesRaw = url.searchParams.get('lines')
+        let lines = 40
+        if (linesRaw != null && linesRaw !== '') {
+          const n = Number.parseInt(linesRaw, 10)
+          if (Number.isFinite(n) && !Number.isNaN(n) && n > 0) lines = n
+          else lines = 40
+        }
+        lines = Math.min(Math.max(lines, 1), 50000)
+        const formatRaw = (url.searchParams.get('format') ?? 'ansi').toLowerCase()
+        if (formatRaw !== 'ansi' && formatRaw !== 'plain') {
+          reject(res, 400, "format must be 'ansi' or 'plain'")
+          return
+        }
+        const format = formatRaw === 'plain' ? 'text' as const : 'ansi' as const
+        const CONCURRENCY = 4
+        let idx = 0
+        const results: Array<{ pane_id: string; text?: string; truncated?: boolean; revision?: number; error?: string }> = new Array(paneIds.length)
+        const worker = async () => {
+          while (idx < paneIds.length) {
+            const cur = idx++
+            const paneId = paneIds[cur]
+            try {
+              const r = await ctx.herdr.paneRead({ pane_id: paneId, source: 'recent_unwrapped', lines, format })
+              const txt = truncateAnsiTail(r.text ?? '', OUTPUT_CAP)
+              const truncated = Boolean(r.truncated) || (r.text?.length ?? 0) > OUTPUT_CAP
+              const entry: { pane_id: string; text: string; truncated: boolean; revision?: number } = { pane_id: paneId, text: txt, truncated }
+              if (r.revision != null) entry.revision = r.revision
+              results[cur] = entry
+            } catch (e) {
+              results[cur] = { pane_id: paneId, error: e instanceof Error ? e.message : String(e) }
+            }
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, paneIds.length) }, () => worker()))
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ outputs: results }))
       },
     })
     // M11 本对话 pane 查询：GET /herdr-session-pane?agent=<sessionId>
@@ -533,6 +610,119 @@ export function apply(ctx: Context, config: ConfigType) {
         }
       },
     })
+    offSseRoute = webServer.register({
+      kind: 'exact',
+      path: '/herdr-events',
+      handler: (req: unknown, res: unknown) => {
+        if (!guard(res as Res, req, 'GET')) return
+        const r = res as Res & { write(chunk: string): boolean }
+        const rawReq = req as Req & { on?: (ev: string, cb: () => void) => void; socket?: { on?: (ev: string, cb: () => void) => void } }
+        const url = new URL((rawReq as { url?: string }).url ?? '/', 'http://localhost')
+        const afterRevisionParam = url.searchParams.get('after_revision') ?? url.searchParams.get('afterRevision')
+        const lastEventIdHeader = (() => {
+          const h = (rawReq.headers ?? {})['last-event-id']
+          if (Array.isArray(h)) return h[0]
+          if (typeof h === 'string') return h
+          return null
+        })()
+        const afterRevisionText = afterRevisionParam ?? lastEventIdHeader
+        const afterRevision = afterRevisionText != null ? Number(afterRevisionText) : NaN
+
+        r.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+          'connection': 'keep-alive',
+          'x-accel-buffering': 'no',
+        })
+        const sseWrite = (chunk: string): void => {
+          try { r.write(chunk) } catch { /* socket closed */ }
+        }
+        const send = (event: string, data: unknown, id?: string | number): void => {
+          if (id != null) sseWrite(`id: ${String(id)}\n`)
+          sseWrite(`event: ${event}\n`)
+          sseWrite(`data: ${JSON.stringify(data)}\n\n`)
+        }
+        sseWrite('retry: 3000\n\n')
+        if (Number.isSafeInteger(afterRevision) && afterRevision >= 0) {
+          try {
+            const snap = tracker.snapshot('project')
+            send('topology', { topology: snap.topology, filter: snap.filter }, afterRevision)
+          } catch { /* ignore */ }
+        }
+        const heartbeat = (): void => {
+          try {
+            const snap = tracker.snapshot('project')
+            send('heartbeat', { stale: snap.stale, last_error: snap.last_error })
+          } catch {
+            send('heartbeat', { stale: false, last_error: null })
+          }
+        }
+        const hbTimer = setInterval(heartbeat, 10000)
+
+        const herdrClient = ctx.herdr as unknown as { onEvent?: (h: (e: unknown) => void) => () => void }
+        const disposers: Array<() => void> = []
+        if (typeof herdrClient.onEvent === 'function') {
+          const off = herdrClient.onEvent((raw: unknown) => {
+            const env = raw as { event?: string; data?: Record<string, unknown> }
+            const data = (env.data ?? {}) as Record<string, unknown>
+            const type = typeof data.type === 'string' ? data.type : (env.event as string)
+            if (type === 'pane_output_changed') {
+              const pane_id = String(data.pane_id ?? '')
+              const revision = typeof data.revision === 'number' ? data.revision : 0
+              if (pane_id) send('output', { pane_id, revision }, revision)
+              return
+            }
+            if (type === 'pane.agent_status_changed' || type === 'pane_agent_status_changed' || type === 'pane_agent_detected') {
+              const pane_id = String(data.pane_id ?? '')
+              const agent = String(data.agent ?? '')
+              const status = String((data as { agent_status?: unknown }).agent_status ?? (data as { final_status?: unknown }).final_status ?? 'unknown')
+              const message = data.message != null ? String(data.message) : undefined
+              const workspace_id = data.workspace_id != null ? String(data.workspace_id) : undefined
+              if (pane_id) send('agent_status', { pane_id, agent, status, ...(message ? { message } : {}), ...(workspace_id ? { workspace_id } : {}) })
+              return
+            }
+            const topologyTypes = new Set([
+              'workspace_created', 'workspace_updated', 'workspace_metadata_updated', 'workspace_renamed', 'workspace_moved',
+              'workspace_reordered', 'workspace_closed', 'workspace_focused',
+              'tab_created', 'tab_closed', 'tab_renamed', 'tab_moved', 'tab_focused',
+              'pane_created', 'pane_closed', 'pane_updated', 'pane_focused', 'pane_moved', 'pane_exited',
+              'layout_updated',
+            ])
+            if (topologyTypes.has(type)) {
+              try {
+                const snap = tracker.snapshot('project')
+                send('topology', { topology: snap.topology, filter: snap.filter })
+              } catch { /* ignore */ }
+            }
+          })
+          disposers.push(off)
+        }
+        const offAgentState = ctx.on('herdr/agent-state', (info: { pane_id: string; agent: string; status: string; message?: string }) => {
+          send('agent_status', { pane_id: info.pane_id, agent: info.agent, status: info.status, ...(info.message ? { message: info.message } : {}) })
+        })
+        disposers.push(offAgentState)
+        const offResource = ctx.on('herdr/resource-changed', () => {
+          try {
+            const snap = tracker.snapshot('project')
+            send('topology', { topology: snap.topology, filter: snap.filter })
+          } catch { /* ignore */ }
+        })
+        disposers.push(offResource)
+
+        const cleanup = (): void => {
+          clearInterval(hbTimer)
+          for (const d of disposers) try { d() } catch { /* ignore */ }
+        }
+        const maybeReq = rawReq as { on?: (ev: string, cb: () => void) => unknown }
+        if (typeof maybeReq.on === 'function') {
+          maybeReq.on('close', cleanup)
+        }
+        const sock = (rawReq as { socket?: { on?: (ev: string, cb: () => void) => unknown } }).socket
+        if (sock && typeof sock.on === 'function') {
+          sock.on('close', cleanup)
+        }
+      },
+    })
     // 终端输出变化长轮询：events.wait(pane_output_changed + min_revision)。
     offTerminalWaitRoute = webServer.register({
       kind: 'exact',
@@ -581,6 +771,16 @@ export function apply(ctx: Context, config: ConfigType) {
   })
   tracker.start()
   dashboardTracker.start()
+  // Phase3: raw 订阅独立于 events.enabled（Phase1-1 织入），不受 setupEventForwarding 开关影响；脏集路径始终活跃
+  const herdrRawSub = (ctx as unknown as { herdr?: { onEvent?: (h: (e: unknown) => void) => () => void } }).herdr?.onEvent
+  let offRaw: (() => void) | null = null
+  if (typeof herdrRawSub === 'function') {
+    try {
+      offRaw = herdrRawSub((e: unknown) => {
+        try { tracker.onHerdrEvent(e as never) } catch {}
+      })
+    } catch {}
+  }
 
   // 会话 skill：启用插件即加载 Herdr 官方 SKILL.md
   const stopSkill = registerHerdrSkill(ctx)
@@ -596,6 +796,7 @@ export function apply(ctx: Context, config: ConfigType) {
 
   ctx.effect(() => {
     return () => {
+      offRaw?.()
       tracker.stop()
       dashboardTracker.stop()
       offAgentState()
@@ -610,6 +811,9 @@ export function apply(ctx: Context, config: ConfigType) {
       offTerminalBootstrapRoute?.()
       offTerminalWaitRoute?.()
       offDashboardRoute?.()
+      offTopologyRoute?.()
+      offAgentsOutputRoute?.()
+      offSseRoute?.()
       offTerminalSessionRoutes?.()
       terminalManager?.dispose()
       terminalManager = null

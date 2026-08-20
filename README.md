@@ -116,10 +116,12 @@ and the preset is re-copied on first load.
 | `session` | string | – | herdr session name (`HERDR_SESSION`) |
 | `timeoutMs` | number | 30000 | per-command timeout |
 | `allowBackground` | boolean | `false` | expose `run_in_background` on pane run |
-| `events.enabled` | boolean | `false` | subscribe to Herdr events |
+| `events.enabled` | boolean | `true` | subscribe to Herdr events (push-first, poll fallback) |
 | `events.maxReconnectMs` | number | 30000 | event subscription reconnect cap |
 | `reportState` | boolean | `true` | report DSH→Herdr state inside a pane (`HERDR_ENV`) |
 | `projectRoot` | string | – | project directory for server-side filtering; defaults to `process.cwd()` |
+
+Additional panel endpoints: `GET /herdr-topology?lite=1` returns `{server, topology, filter, stale}` without `agents[].output` for lightweight polling; `GET /herdr-agents/output?pane_ids=...` fetches pane outputs on demand (lazy, `lines`/`format` params).
 
 Preset configuration (`presets/herdr/agent.cordis.yml`, `herdr-session-mode`):
 
@@ -279,6 +281,8 @@ herdr 模式):
 | Plugin fails to load with "requires a resolvable socket path" | Windows is not supported; on POSIX set `socketPath`/`HERDR_SOCKET_PATH` |
 | No "Herdr 模式" preset | Check `$DSH_HOME/.agent-presets/herdr/` exists (plugin recreates it on load) |
 | Panel stuck on "正在获取本会话 pane…" | The session was switched into herdr 模式 after creation or the server restarted; the first model request triggers a fallback bind — send a message, or restart the profile |
+| Panel stuck on "正在获取本会话 pane…" → 已由 selfPaneStore 退避单例接管，切会话后 1→2→4s 自动重查，无需手动重启 | Handled by `selfPaneStore` singleton with exponential backoff; after switching sessions it retries at 1→2→4s automatically, no manual restart required |
+| No Herdr events / stale 提示 → 检查 events.enabled 默认为 true，` 和 `GET /herdr-events` SSE 是否被代理缓冲（`X-Accel-Buffering:no`） | Verify `events.enabled` defaults to `true` and that `GET /herdr-events` SSE is not proxy-buffered (`X-Accel-Buffering:no`) |
 | `herdr_agent_start` fails with `agent_pane_busy` | Transient: a freshly split pane's shell is still initializing; the tool retries automatically — check again shortly |
 
 ## Development

@@ -1,12 +1,13 @@
 // PaneTerminal：优先使用 Herdr terminal session observer/controller（实时 ANSI frame 流）。
 // - observer 只读；点击终端 → requestControl；controlling 下输入/缩放经 controller 命令；
-// - 已有 controller 时进入 conflict 覆盖层，用户二次确认后才 takeover；
+// - 已有 controller 时进入 conflict 横幅，用户二次确认后才 takeover；
 // - terminal session 不可用时回退 viewport ANSI 快照（events.wait + pane.read）+ 兼容模式。
 
 import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import type { AgentAccent } from '../client-logic.ts'
+import { StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
+import { agentTheme, dotState, type AgentAccent } from '../client-logic.ts'
 import {
   fetchTerminalBootstrap,
   sendPaneInput,
@@ -18,10 +19,6 @@ import { rebaseTerminalFrame, trimAnsiSnapshotPadding } from '../terminal-ansi.t
 import { t, useHerdrLang } from './i18n.ts'
 import { resolveTerminalFontFamily } from './terminal-font.ts'
 
-// —— 终端主题：随 DSH 界面亮暗切换（用户指定 Ghostty 主题）——
-// 暗模式：Cyberdream（cyberdream.nvim 官方 extras/ghostty/cyberdream）
-// 亮模式：Claude Code Light（Anthropic 官方品牌调色板，mundizzle/claude-theme ghostty/claude-light）
-// 这两套是产品决策指定的完整终端调色板，故意使用固定色值而非 dsw token。
 const CYBERDREAM_DARK: Record<string, string> = {
   background: '#16181a',
   foreground: '#ffffff',
@@ -72,7 +69,6 @@ const CLAUDE_CODE_LIGHT: Record<string, string> = {
   brightWhite: '#faf9f5',
 }
 
-/** DSH 暗模式判定：body[data-ds-dark-theme]（与 styles.ts 及现有 MutationObserver 一致）。 */
 function isDarkMode(): boolean {
   return typeof document !== 'undefined' && !!document.body?.hasAttribute('data-ds-dark-theme')
 }
@@ -104,14 +100,16 @@ export interface PaneTerminalProps {
   accent?: AgentAccent
   maximized?: boolean
   readOnly?: boolean
+  agent?: string
 }
 
 type IoMode = 'observer' | 'controlling' | 'snapshot'
 
-export function PaneTerminal({ paneId, status, accent, maximized, readOnly = false }: PaneTerminalProps) {
+export function PaneTerminal({ paneId, status, accent, maximized, readOnly = false, agent }: PaneTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
   const ioModeRef = useRef<IoMode>('observer')
   const [syncStatus, setSyncStatus] = useState<'syncing' | 'ready' | 'error'>('syncing')
   const [syncError, setSyncError] = useState<string | null>(null)
@@ -120,6 +118,10 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
   const [conflict, setConflict] = useState(false)
   const [confirmTakeover, setConfirmTakeover] = useState(false)
   const [compatMode, setCompatMode] = useState(false)
+  const [idleHint, setIdleHint] = useState(false)
+  const lastInputAtRef = useRef<number>(Date.now())
+  const hiddenSinceRef = useRef<number | null>(null)
+  const escSelectionPendingRef = useRef(false)
   void useHerdrLang()
 
   const currentSize = (): { cols: number; rows: number } => {
@@ -133,7 +135,6 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
     const terminal = new Terminal({
       cursorBlink: true,
       fontSize: 13,
-      // xterm canvas 不会解析 CSS var()；先经 DOM 解析再传入具体字体族。
       fontFamily: resolveTerminalFontFamily(host),
       lineHeight: 1.2,
       scrollback: 5000,
@@ -147,8 +148,10 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
     fitAddonRef.current = fitAddon
 
     const input = terminal.onData(data => {
+      lastInputAtRef.current = Date.now()
+      setIdleHint(false)
       const mode = ioModeRef.current
-      if (mode === 'observer') return // 只读
+      if (mode === 'observer') return
       setInputError(null)
       if (mode === 'controlling') {
         terminalSessionStore.sendInput(paneId, bytes(data))
@@ -163,7 +166,11 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
     }
     const fitAndNotify = () => {
       fit()
-      if (ioModeRef.current === 'controlling') terminalSessionStore.resize(paneId, currentSize())
+      if (ioModeRef.current === 'controlling') {
+        lastInputAtRef.current = Date.now()
+        setIdleHint(false)
+        terminalSessionStore.resize(paneId, currentSize())
+      }
     }
     let notifyTimer: number | undefined
     const scheduleFit = () => {
@@ -171,7 +178,11 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
       if (notifyTimer !== undefined) window.clearTimeout(notifyTimer)
       notifyTimer = window.setTimeout(() => {
         notifyTimer = undefined
-        if (ioModeRef.current === 'controlling') terminalSessionStore.resize(paneId, currentSize())
+        if (ioModeRef.current === 'controlling') {
+          lastInputAtRef.current = Date.now()
+          setIdleHint(false)
+          terminalSessionStore.resize(paneId, currentSize())
+        }
       }, 120)
     }
     const ro = new ResizeObserver(() => scheduleFit())
@@ -270,6 +281,27 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
           const change = await waitForTerminalChange(paneId, revision, signal)
           if (signal.aborted) return
           if (!change.changed) continue
+          const deltaB64 = change.bytes ?? change.delta
+          if (typeof deltaB64 === 'string' && deltaB64.length > 0) {
+            const terminal = terminalRef.current
+            if (terminal) {
+              const buf = terminal.buffer.active
+              const atBottom = buf.viewportY >= buf.baseY
+              let bytesArr: Uint8Array | null = null
+              try {
+                const raw = atob(deltaB64)
+                bytesArr = Uint8Array.from(raw, c => c.charCodeAt(0))
+              } catch { bytesArr = null }
+              if (bytesArr) {
+                terminal.write(rebaseTerminalFrame(bytesArr, change.full === true), () => {
+                  if (atBottom) terminal.scrollToBottom()
+                })
+                revision = change.revision
+                retryMs = 500
+                continue
+              }
+            }
+          }
           await renderSnapshot(false)
           revision = change.revision
           retryMs = 500
@@ -308,9 +340,6 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
           writeFrame({ bytesArr, seq: sig.seq, full: sig.full })
           return
         }
-        // 历史预填充就绪前缓存帧；首个 full 帧触发拉历史（recent_unwrapped 快照按行
-        // 写入，超出视口的行进 scrollback），历史写完再按序回放缓存帧——full/diff 帧
-        // 不清空 scrollback，滚轮即可翻看之前输出
         if (!historySeeded) {
           historySeeded = true
           void fetchTerminalBootstrap(paneId, 500, signal, 'recent_unwrapped')
@@ -340,6 +369,8 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
         setMode('controlling')
         setSyncStatus('ready')
         setSyncError(null)
+        lastInputAtRef.current = Date.now()
+        setIdleHint(false)
         if (terminalRef.current) terminalRef.current.focus()
       } else if (sig.status === 'conflict') {
         setConflict(true)
@@ -348,7 +379,6 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
         if (!observerSucceeded) startSnapshot()
         else { setConflict(false); setSyncError(sig.message ?? null); setSyncStatus('error') }
       } else if (sig.status === 'closed') {
-        // 流结束/服务端 session 回收（agent 任务结束等）：回退快照轮询保持内容最新
         startSnapshot()
       }
     }
@@ -368,14 +398,18 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
 
   const requestControl = (takeover = false): void => {
     setConflict(false)
+    lastInputAtRef.current = Date.now()
+    setIdleHint(false)
     void terminalSessionStore.requestControl(paneId, currentSize(), takeover).catch(() => {})
   }
   const releaseControl = (): void => {
+    escSelectionPendingRef.current = false
+    setIdleHint(false)
     void terminalSessionStore.releaseControl(paneId, currentSize()).catch(() => {})
   }
   const onTerminalClick = (): void => {
-    if (readOnly) return
-    if (ioModeRef.current === 'observer' && !conflict) requestControl(false)
+    if (readOnly || conflict) return
+    if (ioModeRef.current === 'observer') requestControl(false)
   }
 
   useEffect(() => {
@@ -393,62 +427,194 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
     return () => observer.disconnect()
   }, [])
 
-  const readOnlyDerived = ioModeRef.current === 'observer' && !compatMode
-  const showReadOnlyBadge = !readOnly && readOnlyDerived
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const hasFocus = !!document.activeElement?.closest('.herdr-xterm-host')
+      const term = terminalRef.current
+      const mode = ioModeRef.current
+      if (e.key === 'Enter' && mode === 'observer' && !readOnly && !conflict && hasFocus) {
+        e.preventDefault()
+        requestControl(false)
+        return
+      }
+      if (e.key === 'Escape' && mode === 'controlling' && hasFocus) {
+        if (term?.hasSelection()) {
+          if (!escSelectionPendingRef.current) {
+            escSelectionPendingRef.current = true
+            e.stopPropagation()
+            e.preventDefault()
+            window.setTimeout(() => { escSelectionPendingRef.current = false }, 1200)
+            return
+          }
+          escSelectionPendingRef.current = false
+          term.clearSelection()
+        }
+        e.stopPropagation()
+        e.preventDefault()
+        releaseControl()
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [readOnly, conflict])
+
+  useEffect(() => {
+    let timer: number | undefined
+    const tick = (): void => {
+      if (!document.hidden) {
+        if (ioModeRef.current === 'controlling' && !readOnly && !conflict) {
+          const idle = Date.now() - lastInputAtRef.current > 300_000
+          setIdleHint(prev => (prev !== idle ? idle : prev))
+        } else {
+          setIdleHint(prev => (prev ? false : prev))
+        }
+      }
+      timer = window.setTimeout(tick, 30_000)
+    }
+    timer = window.setTimeout(tick, 30_000)
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [readOnly, conflict])
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.hidden) {
+        hiddenSinceRef.current = Date.now()
+      } else if (hiddenSinceRef.current !== null) {
+        const dur = Date.now() - hiddenSinceRef.current
+        lastInputAtRef.current += dur
+        hiddenSinceRef.current = null
+      }
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
+
+  const headerMode: 'observing' | 'controlling' | 'conflict' | 'snapshot' = conflict
+    ? 'conflict'
+    : compatMode
+      ? 'snapshot'
+      : ioModeRef.current === 'controlling'
+        ? 'controlling'
+        : 'observing'
+
+  const modeLabel = (() => {
+    if (headerMode === 'observing') return t('pane.modeObserving')
+    if (headerMode === 'controlling') return t('pane.modeControlling')
+    if (headerMode === 'snapshot') return t('pane.modeSnapshot')
+    return agent ? t('pane.controlledBy', { agent }) : t('pane.terminalControlledByOther')
+  })()
+
+  const paneSession = terminalSessionStore.getPane(paneId)
+  const watcherCount = paneSession?.refcount ?? terminalSessionStore.getRefCount(paneId)
+  const showPresence = headerMode === 'observing' && watcherCount > 1
+
+  const occupantEl = showPresence
+    ? t('pane.presence', { count: watcherCount })
+    : headerMode === 'observing'
+      ? '--'
+      : agent
+        ? (
+          <span className="herdr-term-occupant">
+            <span className="herdr-agent-accent" data-accent={agentTheme(agent)} />
+            <span>{agent}</span>
+          </span>
+        )
+        : accent
+          ? <span className="herdr-agent-accent" data-accent={accent} />
+          : '--'
+
+  const supSegments: string[] = []
+  if (compatMode) supSegments.push(t('pane.modeSnapshot'))
+  if (historyIncomplete) supSegments.push(t('pane.terminalHistoryIncomplete'))
+  if (syncStatus === 'syncing') supSegments.push(t('pane.terminalSyncing'))
+  else if (syncStatus === 'error') supSegments.push(syncError ?? t('pane.terminalReconnect'))
+  if (inputError) supSegments.push(`${t('pane.terminalInputFailed')}: ${inputError}`)
+  if (idleHint && headerMode === 'controlling') supSegments.push(t('pane.idleHint', { minutes: 5 }))
+  const supText = supSegments.length ? `·${supSegments.join('·')}` : ''
+  const supTitle = supSegments.join(' · ')
+
+  const showHover = !readOnly && headerMode === 'observing' && !conflict
 
   return (
-    <div className={`herdr-term ${maximized ? 'herdr-term-maximized' : ''}`} data-accent={accent ?? undefined}>
-      <div
-        ref={containerRef}
-        className="herdr-xterm-host"
-        role="log"
-        aria-label={t('pane.terminalOutput')}
-        onClick={onTerminalClick}
-      />
-      {syncStatus === 'syncing' ? (
-        <div className="herdr-term-sync" role="status">{t('pane.terminalSyncing')}</div>
-      ) : null}
-      {syncStatus === 'error' ? (
-        <div className="herdr-term-error" role="status">{syncError ?? t('pane.terminalReconnect')}</div>
-      ) : null}
-      {inputError ? (
-        <div className="herdr-term-input-error" role="alert">{t('pane.terminalInputFailed')}: {inputError}</div>
-      ) : null}
-      {historyIncomplete && compatMode ? (
-        <div className="herdr-term-warning" role="status">{t('pane.terminalHistoryIncomplete')}</div>
-      ) : null}
-      {showReadOnlyBadge ? (
-        <button type="button" className="herdr-term-ro" role="status" onClick={() => requestControl(false)}>
-          {t('pane.terminalReadOnly')} · {t('pane.terminalClickToControl')}
-        </button>
-      ) : null}
-      {compatMode ? (
-        <div className="herdr-term-compat" role="status">{t('pane.terminalCompatMode')}</div>
-      ) : null}
-      {!readOnly && ioModeRef.current === 'controlling' ? (
-        <button type="button" className="herdr-term-ctrl" role="status" onClick={releaseControl}>
-          {t('pane.terminalReleaseControl')}
-        </button>
-      ) : null}
-      {conflict ? (
-        <div className="herdr-term-conflict" role="alert">
-          <span>{t('pane.terminalControlledByOther')}</span>
-          <div className="herdr-term-conflict-actions">
-            <button type="button" onClick={() => setConflict(false)}>{t('pane.terminalContinueObserve')}</button>
-            {!readOnly ? (
-              confirmTakeover ? (
-                <>
-                  <span>{t('pane.terminalTakeoverConfirm')}</span>
-                  <button type="button" onClick={() => requestControl(true)}>{t('pane.terminalTakeover')}</button>
-                  <button type="button" onClick={() => setConfirmTakeover(false)}>{t('view.close')}</button>
-                </>
-              ) : (
-                <button type="button" onClick={() => setConfirmTakeover(true)}>{t('pane.terminalTakeover')}</button>
+    <div ref={wrapRef} className={`herdr-term ${maximized ? 'herdr-term-maximized' : ''}`} data-accent={accent ?? undefined}>
+      <div className="herdr-term-header" data-mode={headerMode}>
+        <span className="herdr-term-header-left">
+          <StateDot state={dotState(status)} />
+          <span>{modeLabel}</span>
+        </span>
+        <span className="herdr-term-header-center" title={typeof occupantEl === 'string' ? occupantEl : agent ?? ''}>
+          {occupantEl}
+        </span>
+        <span className="herdr-term-header-right">
+          {supText
+            ? (
+              <sup
+                className={`herdr-term-sup${idleHint ? ' herdr-term-sup--idle' : ''}`}
+                title={supTitle}
+                onClick={idleHint ? releaseControl : undefined}
+                role={idleHint ? 'button' : undefined}
+                tabIndex={idleHint ? 0 : undefined}
+                onKeyDown={idleHint
+                  ? (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); releaseControl() }
+                  }
+                  : undefined}
+                style={idleHint ? { cursor: 'pointer' } : undefined}
+              >
+                {supText}
+              </sup>
+            )
+            : null}
+          {!readOnly && headerMode === 'observing' && !conflict
+            ? (
+              <button type="button" className="herdr-term-header-btn" onClick={() => requestControl(false)} aria-label={t('pane.acquireControl')}>
+                {t('pane.acquireControl')} <span className="herdr-term-header-hint">⌘Enter</span>
+              </button>
+            )
+            : headerMode === 'controlling' && !readOnly
+              ? (
+                <button type="button" className="herdr-term-header-btn herdr-term-header-btn--release" onClick={releaseControl} aria-label={t('pane.releaseControl')}>
+                  {t('pane.releaseControl')} <span className="herdr-term-header-hint">{t('pane.releaseHint')}</span>
+                </button>
               )
-            ) : null}
-          </div>
+              : null}
+        </span>
+      </div>
+      {conflict ? (
+        <div className="herdr-term-conflict-bar" role="alert">
+          <span>{agent ? t('pane.controlledBy', { agent }) : t('pane.terminalControlledByOther')}</span>
+          <span className="herdr-term-conflict-actions">
+            <button type="button" onClick={() => setConflict(false)}>{t('pane.terminalContinueObserve')}</button>
+            {!readOnly
+              ? confirmTakeover
+                ? (
+                  <>
+                    <span>{t('pane.confirmTakeoverHint')}</span>
+                    <button type="button" onClick={() => requestControl(true)}>{t('pane.confirmTakeover')}</button>
+                    <button type="button" onClick={() => setConfirmTakeover(false)}>{t('view.close')}</button>
+                  </>
+                )
+                : <button type="button" onClick={() => setConfirmTakeover(true)}>{t('pane.requestTakeover')}</button>
+              : null}
+          </span>
         </div>
       ) : null}
+      <div className="herdr-term-host-wrap">
+        <div
+          ref={containerRef}
+          className="herdr-xterm-host"
+          role="log"
+          aria-label={t('pane.terminalOutput')}
+          onClick={onTerminalClick}
+        />
+        {showHover ? (
+          <div className="herdr-term-hover" aria-hidden="true">
+            <span>{t('pane.acquireHint')}</span>
+          </div>
+        ) : null}
+      </div>
       {status === 'working' ? (
         <span className="herdr-log-live" role="status" title={t('pane.workingIndicator')} aria-label={t('pane.workingIndicator')} />
       ) : null}
@@ -456,7 +622,6 @@ export function PaneTerminal({ paneId, status, accent, maximized, readOnly = fal
   )
 }
 
-// 浏览器端 UTF-8 → bytes
 function bytes(s: string): Uint8Array {
   return new Uint8Array(new TextEncoder().encode(s))
 }

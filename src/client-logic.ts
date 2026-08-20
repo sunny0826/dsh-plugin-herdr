@@ -390,11 +390,31 @@ export interface StatusStore<T> {
   getError(): string | null
   /** 在途请求数（单飞保证 ≤ 1；测试/诊断用）。 */
   inflight(): number
+  /** 诊断信息（DevTools 用；不触发渲染）。 */
+  getDiagnostics(): { inflight: number; currentInterval: number | null; paused: boolean }
+  /** 快捷 stale 判定（snap 含 stale 字段时透传）。 */
+  getStale(): boolean
+}
+
+export type SseEvent =
+  | { type: 'output'; pane_id: string; revision: number; id?: string }
+  | { type: 'agent_status'; pane_id: string; agent: string; status: string; message?: string; workspace_id?: string }
+  | { type: 'topology'; topology: unknown; filter?: unknown }
+  | { type: 'heartbeat'; stale: boolean; last_error: string | null }
+
+export interface SseHandle {
+  close(): void
 }
 
 export interface StatusPollOptions<T> {
   intervalMs?: number
+  intervalFor?: (snap: T | null) => number
+  pauseWhen?: () => boolean
   fetch: (signal: AbortSignal) => Promise<T>
+  sse?: {
+    open: (signal: AbortSignal, onEvent: (e: SseEvent) => void) => SseHandle
+  }
+  onSseEvent?: (snap: T, event: SseEvent) => T
 }
 
 /**
@@ -403,29 +423,100 @@ export interface StatusPollOptions<T> {
  * - 单飞：在途请求未完成时忽略后续触发（慢请求不重叠，避免重复请求风暴）；
  * - 无重复 timer：started 标志保证只有一个 interval；最后订阅者退订即停；
  * - stop 中止在途请求且结果不落盘。
+ * - stale 透传：snap 本身可含 stale（T 含 stale 时直接可用）；fetch 失败时 error 不丢且 emit 触发供诊断。
+ * - 自适应间隔：intervalFor(snap) 动态决定下一周期时长，变化时重建 timer；
+ * - 门控：pauseWhen()===true 时跳过 pollOnce 执行（保留 timer/listeners，恢复时立即 refresh）。
+ * - 防抖：refresh() 200ms 合并，单飞 guard 仍生效。
  */
 export function createStatusStore<T>(opts: StatusPollOptions<T>): StatusStore<T> {
   let snap: T | null = null
+  let lastSnap: T | null = null
   let error: string | null = null
   let started = false
   let controller: AbortController | null = null
   let timer: ReturnType<typeof setInterval> | null = null
+  let currentInterval: number | null = null
   let polling = false
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null
   const listeners = new Set<() => void>()
+  let sseHandle: SseHandle | null = null
+  let sseController: AbortController | null = null
 
   const emit = () => {
     for (const l of listeners) l()
+  }
+
+  const getInterval = (): number => opts.intervalFor?.(snap) ?? opts.intervalMs ?? 2000
+
+  const handleSseEvent = (ev: SseEvent): void => {
+    if (opts.onSseEvent && snap !== null) {
+      try {
+        const next = opts.onSseEvent(snap, ev)
+        if (next !== snap) {
+          snap = next
+          lastSnap = next
+          emit()
+        }
+      } catch {
+        // patch 失败不影响轮询
+      }
+    } else if (ev.type === 'heartbeat' && snap !== null) {
+      // heartbeat fallback: 更新 stale/last_error（即使无 onSseEvent 也尝试浅合并）
+      try {
+        const s = snap as unknown as Record<string, unknown>
+        const next = { ...s, stale: ev.stale, last_error: ev.last_error } as unknown as T
+        snap = next
+        lastSnap = next
+        emit()
+      } catch { /* ignore */ }
+    }
+    // 非 patch 模式的 output/agent_status/topology 事件：若无 onSseEvent 则触发 refresh 走 polling 补齐
+    if (!opts.onSseEvent && (ev.type === 'output' || ev.type === 'agent_status' || ev.type === 'topology')) {
+      void pollOnce()
+    }
+  }
+
+  const syncSse = (): void => {
+    const shouldPause = opts.pauseWhen?.() ?? false
+    if (shouldPause) {
+      if (sseHandle) {
+        try { sseHandle.close() } catch { /* ignore */ }
+        sseHandle = null
+      }
+      if (sseController) {
+        try { sseController.abort() } catch { /* ignore */ }
+        sseController = null
+      }
+      return
+    }
+    if (!started) return
+    if (!opts.sse) return
+    if (sseHandle) return
+    try {
+      sseController = new AbortController()
+      // 外部 controller abort 时同时关闭 SSE
+      controller?.signal.addEventListener('abort', () => {
+        try { sseHandle?.close() } catch { /* ignore */ }
+        try { sseController?.abort() } catch { /* ignore */ }
+      }, { once: true })
+      sseHandle = opts.sse.open(sseController.signal, handleSseEvent)
+    } catch {
+      sseHandle = null
+      sseController = null
+    }
   }
 
   const pollOnce = async (): Promise<void> => {
     // 捕获当前 controller：stop() 会置 null，在途请求的 catch 必须引用本次快照
     const ctrl = controller
     if (!ctrl || polling) return // 单飞：在途或已停止
+    if (opts.pauseWhen?.()) return
     polling = true
     try {
       const s = await opts.fetch(ctrl.signal)
       if (ctrl.signal.aborted) return
       snap = s
+      lastSnap = s
       error = null
     } catch (e) {
       if (ctrl.signal.aborted) return
@@ -434,6 +525,29 @@ export function createStatusStore<T>(opts: StatusPollOptions<T>): StatusStore<T>
       polling = false
     }
     emit()
+    syncSse()
+    // 自适应间隔：snap 变化后若 intervalFor 返回不同间隔则重建 timer
+    if (started && timer !== null && opts.intervalFor) {
+      const next = getInterval()
+      if (next !== currentInterval) {
+        clearInterval(timer)
+        currentInterval = next
+        timer = setInterval(() => {
+          if (opts.pauseWhen?.()) {
+            // 暂停时关闭 SSE，下次恢复时重建
+            if (sseHandle) {
+              try { sseHandle.close() } catch { /* ignore */ }
+              sseHandle = null
+              try { sseController?.abort() } catch { /* ignore */ }
+              sseController = null
+            }
+            return
+          }
+          syncSse()
+          void pollOnce()
+        }, currentInterval)
+      }
+    }
   }
 
   const ensurePolling = (): void => {
@@ -441,7 +555,21 @@ export function createStatusStore<T>(opts: StatusPollOptions<T>): StatusStore<T>
     started = true
     controller = new AbortController()
     void pollOnce() // 首次立即 tick
-    timer = setInterval(() => void pollOnce(), opts.intervalMs ?? 2000)
+    currentInterval = getInterval()
+    timer = setInterval(() => {
+      if (opts.pauseWhen?.()) {
+        if (sseHandle) {
+          try { sseHandle.close() } catch { /* ignore */ }
+          sseHandle = null
+          try { sseController?.abort() } catch { /* ignore */ }
+          sseController = null
+        }
+        return
+      }
+      syncSse()
+      void pollOnce()
+    }, currentInterval)
+    syncSse()
   }
 
   const stop = (): void => {
@@ -449,8 +577,21 @@ export function createStatusStore<T>(opts: StatusPollOptions<T>): StatusStore<T>
     started = false
     controller?.abort()
     controller = null
+    if (sseHandle) {
+      try { sseHandle.close() } catch { /* ignore */ }
+      sseHandle = null
+    }
+    if (sseController) {
+      try { sseController.abort() } catch { /* ignore */ }
+      sseController = null
+    }
     if (timer) clearInterval(timer)
     timer = null
+    currentInterval = null
+    if (refreshTimer) {
+      clearTimeout(refreshTimer)
+      refreshTimer = null
+    }
   }
 
   const subscribe = (listener: () => void): (() => void) => {
@@ -462,13 +603,37 @@ export function createStatusStore<T>(opts: StatusPollOptions<T>): StatusStore<T>
     }
   }
 
+  const refresh = (): void => {
+    // 恢复场景：pause 结束时需重建 SSE 并立即刷新
+    syncSse()
+    if (refreshTimer) return
+    void pollOnce()
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null
+    }, 200)
+  }
+
   return {
     subscribe,
-    refresh: () => void pollOnce(),
+    refresh,
     stop,
-    getSnap: () => snap,
+    getSnap: () => {
+      // 同步 lastSnap 供 intervalFor 下次判定（getSnap 调用不改变语义，仅保证 lastSnap 跟踪）
+      lastSnap = snap
+      void lastSnap
+      return snap
+    },
     getError: () => error,
     inflight: () => (polling ? 1 : 0),
+    getDiagnostics: () => ({
+      inflight: polling ? 1 : 0,
+      currentInterval,
+      paused: opts.pauseWhen?.() ?? false,
+    }),
+    getStale: () => {
+      const s = snap as unknown as { stale?: boolean } | null
+      return Boolean(s?.stale)
+    },
   }
 }
 

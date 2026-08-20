@@ -179,6 +179,21 @@ export const I18N_KEYS = {
   'pane.terminalTakeover': { zh: '接管控制', en: 'Take over control' },
   'pane.terminalReleaseControl': { zh: '释放控制', en: 'Release control' },
   'pane.terminalTakeoverConfirm': { zh: '接管将关闭现有控制端，确认接管？', en: 'Takeover will close the current controller. Confirm?' },
+  // ── Header 三段式（design: terminal-control-ux Phase A） ──────────────────
+  'pane.modeObserving': { zh: '观察中', en: 'Observing' },
+  'pane.modeControlling': { zh: '控制中', en: 'Controlling' },
+  'pane.modeSnapshot': { zh: '快照', en: 'Snapshot' },
+  'pane.acquireControl': { zh: '获取控制', en: 'Take control' },
+  'pane.releaseControl': { zh: '释放控制', en: 'Release' },
+  'pane.releaseHint': { zh: 'Esc 释放', en: 'Esc to release' },
+  'pane.controlledBy': { zh: '由 {agent} 控制', en: 'Controlled by {agent}' },
+  'pane.requestTakeover': { zh: '申请接管', en: 'Request takeover' },
+  'pane.confirmTakeover': { zh: '确认接管', en: 'Confirm takeover' },
+  'pane.confirmTakeoverHint': { zh: '确认后将踢出对方', en: 'This will disconnect the current controller' },
+  'pane.acquireHint': { zh: '点击或按 Enter 获取', en: 'Click or press Enter to take control' },
+  // ── Phase C：多观察者 presence 与空闲释放提示 ────────────────────────
+  'pane.presence': { zh: '· {count} 人观察', en: '· {count} watching' },
+  'pane.idleHint': { zh: '空闲 {minutes} 分钟，可释放', en: 'Idle {minutes}m, consider releasing' },
   // ── 展开/收起日志按钮 ────────────────────────────────────────────
   'pane.expandLog': { zh: '展开日志', en: 'Expand log' },
   'pane.collapseLog': { zh: '收起日志', en: 'Collapse log' },

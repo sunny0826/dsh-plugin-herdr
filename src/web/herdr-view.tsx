@@ -14,11 +14,11 @@ import {
   statusSortPriority,
 } from '../client-logic.ts'
 import { t, useHerdrLang } from './i18n.ts'
-import { getPendingFocusPane, setPendingFocusPane, getSessionId } from './navigation.ts'
-import { fetchSelfPaneId } from './session-pane.ts'
+import { getPendingFocusPane, setPendingFocusPane } from './navigation.ts'
+import { useSelfPaneId } from './self-pane-store.ts'
 import { HerdrServerBanner } from './server-banner.tsx'
 import { HerdrLogo } from './pane-list.tsx'
-import { useHerdrStatus, useHerdrStart } from './store.ts'
+import { fetchPaneOutputsDetailed, openHerdrEvents, useHerdrStatus, useHerdrStart } from './store.ts'
 import { useHerdrMode } from './mode.ts'
 import { getActivePane, setActivePane, useLayoutMode } from './layout-mode.ts'
 import type { HerdrAgentStatus, HerdrPaneView } from './types.ts'
@@ -82,15 +82,13 @@ export function HerdrPanesView() {
   const [insertPos, setInsertPos] = useState<'before' | 'after' | null>(null)
 
   // ── T11 本地乐观状态 ──────────────────────────────────────────────
-  // selfPaneId：本对话绑定 pane（不渲染 ✕）
-  const [selfPaneId, setSelfPaneId] = useState<string | null>(null)
-  const selfPaneIdRef = useRef<string | null>(null)
+  // selfPaneId：本对话绑定 pane（不渲染 ✕）— 单例订阅，退避由 store 驱动
+  const selfPaneIdRaw = useSelfPaneId()
+  const selfPaneId = selfPaneIdRaw ?? null
   // 关闭成功后的本地隐藏集（乐观移除；轮询收敛/失败回滚前过滤展示）
   const [hiddenPaneIds, setHiddenPaneIds] = useState<Set<string>>(new Set())
   // 重命名本地覆盖：Map<id, string | null>（null = 清除名称；undefined = 无覆盖）
   const [labelOverrides, setLabelOverrides] = useState<Map<string, string | null>>(new Map())
-  // 已查询过的会话 id（绑定 pane 轮询去重）
-  const lastSessionId = useRef<string | undefined>(undefined)
   const [actionError, setActionError] = useState<ActionError | null>(null)
   // 跨 workspace drop 提示（T15）：拖动手柄拖动但未在同 workspace 内落位时显示的顶部横幅
   const [dropHint, setDropHint] = useState<string | null>(null)
@@ -130,26 +128,6 @@ export function HerdrPanesView() {
     }
     return () => document.removeEventListener('herdr:focus-pane', handler)
   }, [])
-
-  // 本对话 pane 绑定查询（与 pane-list 同源轮询；只读 /herdr-session-pane）。
-  // 同一会话下持续查询直到命中——bind 在 created/首个模型请求才完成，首次查询
-  // 可能早于绑定，只查一次会让 ✕ 保护与自识别长期失效。
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const id = getSessionId()
-      if (id !== lastSessionId.current) {
-        lastSessionId.current = id
-        setSelfPaneId(null)
-        return
-      }
-      if (!id || selfPaneIdRef.current) return
-      void fetchSelfPaneId(id).then(paneId => setSelfPaneId(paneId))
-    }, 1000)
-    return () => clearInterval(timer)
-  }, [])
-  useEffect(() => {
-    selfPaneIdRef.current = selfPaneId
-  }, [selfPaneId])
 
   const agentByPane = new Map<string, HerdrAgentStatus>((snap?.agents ?? []).map(a => [a.pane_id, a]))
   // panes → workspace_id 映射（跨 workspace drop 校验用）
@@ -194,6 +172,85 @@ export function HerdrPanesView() {
     [visibleGroups, orderedByWs],
   )
 
+  const [paneOutputs, setPaneOutputs] = useState<Map<string, { text: string; truncated: boolean }>>(new Map())
+  const gridRef = useRef<HTMLDivElement | null>(null)
+  const visibleRef = useRef(false)
+  const pendingOutputIdsRef = useRef<Set<string>>(new Set())
+
+  const fetchVisibleOutputs = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return
+    const uniq = [...new Set(ids)]
+    try {
+      const map = await fetchPaneOutputsDetailed(uniq, 40)
+      if (map.size === 0) return
+      setPaneOutputs(prev => {
+        const next = new Map(prev)
+        for (const [k, v] of map) next.set(k, v)
+        return next
+      })
+    } catch { /* empty map fallback handled in store */ }
+  }, [])
+
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') {
+      visibleRef.current = true
+      if (allPanes.length > 0) void fetchVisibleOutputs(allPanes.map(p => p.pane_id))
+      return
+    }
+    const el = gridRef.current
+    if (!el) return
+    const io = new IntersectionObserver(entries => {
+      const isVis = entries.some(e => e.isIntersecting)
+      visibleRef.current = isVis
+      if (isVis) {
+        const pending = [...pendingOutputIdsRef.current]
+        pendingOutputIdsRef.current.clear()
+        const ids = pending.length > 0 ? pending : allPanes.map(p => p.pane_id)
+        if (ids.length > 0) void fetchVisibleOutputs(ids)
+      }
+    }, { threshold: 0.05 })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [allPanes, fetchVisibleOutputs])
+
+  useEffect(() => {
+    if (allPanes.length === 0) return
+    if (visibleRef.current) void fetchVisibleOutputs(allPanes.map(p => p.pane_id))
+  }, [allPanes, fetchVisibleOutputs])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const ctrl = new AbortController()
+    let handle: { close(): void } | null = null
+    try {
+      handle = openHerdrEvents(ctrl.signal, ev => {
+        if (ev.type !== 'output') return
+        const pid = ev.pane_id
+        if (!pid) return
+        if (!allPanes.some(p => p.pane_id === pid)) return
+        if (visibleRef.current) {
+          void fetchVisibleOutputs([pid])
+        } else {
+          pendingOutputIdsRef.current.add(pid)
+        }
+      })
+    } catch { /* ignore */ }
+    return () => {
+      try { ctrl.abort() } catch { /* ignore */ }
+      try { handle?.close() } catch { /* ignore */ }
+    }
+  }, [allPanes, fetchVisibleOutputs])
+
+  const agentByPaneWithOutputs = useMemo(() => {
+    if (paneOutputs.size === 0) return agentByPane
+    const m = new Map(agentByPane)
+    for (const [paneId, v] of paneOutputs) {
+      const prev = m.get(paneId)
+      if (prev) m.set(paneId, { ...prev, output: v.text, outputTruncated: v.truncated })
+    }
+    return m
+  }, [agentByPane, paneOutputs])
+
   // ── 双布局模式（按 workspace 隔离，默认 window 兼容现行为） ─────────────
   const [layoutMode, setLayoutMode] = useLayoutMode(wsId || undefined)
   const [activePaneId, setActivePaneIdState] = useState<string | null>(null)
@@ -235,17 +292,16 @@ export function HerdrPanesView() {
 
   const paneCount = allPanes.length
   const wsCount = visibleGroups.length
-  const agentCount = allPanes.filter(p => agentByPane.has(p.pane_id)).length
+  const agentCount = allPanes.filter(p => agentByPaneWithOutputs.has(p.pane_id)).length
   const serverRunning = snap?.server?.running === true
-  // 五态状态摘要条（design: herdr-tab-redesign §4.2；v3 移除 done 瓦片）
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = { working: 0, blocked: 0, idle: 0, done: 0, unknown: 0 }
     for (const p of allPanes) {
-      const st = paneDisplayState(agentByPane.get(p.pane_id)?.status ?? p.agent_status)
+      const st = paneDisplayState(agentByPaneWithOutputs.get(p.pane_id)?.status ?? p.agent_status)
       counts[st]++
     }
     return counts
-  }, [allPanes, agentByPane])
+  }, [allPanes, agentByPaneWithOutputs])
 
   // ── T11 关闭交互 ──────────────────────────────────────────────────
   // 通用：POST + 乐观移除 + 失败回滚 + 错误横幅 + refresh（v3：仅 pane 级关闭）
@@ -371,6 +427,7 @@ export function HerdrPanesView() {
       {!serverRunning ? <HerdrServerBanner snap={snap} error={error} onStarted={refresh} /> : null}
 
       {dropHint ? <div className="herdr-drop-hint">{dropHint}</div> : null}
+      {snap?.stale ? <div className="herdr-stale-hint" role="status">{t('dashboard.stale')}</div> : null}
 
       {paneCount > 0 ? (
         <div className="herdr-state-tiles" role="status" aria-label={t('view.statusSummary')}>
@@ -448,39 +505,41 @@ export function HerdrPanesView() {
           {selfPaneId ? t('panel.noPane') : t('panel.fetchingPane')}
         </div>
       ) : !maximizedPaneId ? (
-        layoutMode === 'list' ? (
-          <PaneListView
-            panes={allPanes}
-            agentByPane={agentByPane}
-            selfPaneId={selfPaneId}
-            activePaneId={activePaneId}
-            onSelect={selectActive}
-            onClosePane={onClosePane}
-            onRenamePane={onRenamePane}
-            wsId={wsId}
-          />
-        ) : (
-          <PaneGridView
-            panes={allPanes}
-            agentByPane={agentByPane}
-            selfPaneId={selfPaneId}
-            wsId={wsId}
-            dragId={dragId}
-            overId={overId}
-            insertPos={insertPos}
-            onClosePane={onClosePane}
-            onRenamePane={onRenamePane}
-            onMaximize={(paneId, triggerEl) => {
-              maximizedTriggerRef.current = triggerEl
-              setMaximizedPaneId(paneId)
-            }}
-            onHandleDragStart={onHandleDragStart}
-            onHandleDragEnd={onHandleDragEnd}
-            onCardDragOver={onCardDragOver}
-            onCardDrop={onCardDrop}
-            onCardDragLeave={onCardDragLeave}
-          />
-        )
+        <div ref={gridRef}>
+          {layoutMode === 'list' ? (
+            <PaneListView
+              panes={allPanes}
+              agentByPane={agentByPaneWithOutputs}
+              selfPaneId={selfPaneId}
+              activePaneId={activePaneId}
+              onSelect={selectActive}
+              onClosePane={onClosePane}
+              onRenamePane={onRenamePane}
+              wsId={wsId}
+            />
+          ) : (
+            <PaneGridView
+              panes={allPanes}
+              agentByPane={agentByPaneWithOutputs}
+              selfPaneId={selfPaneId}
+              wsId={wsId}
+              dragId={dragId}
+              overId={overId}
+              insertPos={insertPos}
+              onClosePane={onClosePane}
+              onRenamePane={onRenamePane}
+              onMaximize={(paneId, triggerEl) => {
+                maximizedTriggerRef.current = triggerEl
+                setMaximizedPaneId(paneId)
+              }}
+              onHandleDragStart={onHandleDragStart}
+              onHandleDragEnd={onHandleDragEnd}
+              onCardDragOver={onCardDragOver}
+              onCardDrop={onCardDrop}
+              onCardDragLeave={onCardDragLeave}
+            />
+          )}
+        </div>
       ) : null}
 
       {/* 最大化终端视图（design: pane-interactive-terminal §5）— 替换列表 */}
@@ -489,7 +548,7 @@ export function HerdrPanesView() {
           <div className="herdr-term-max-toolbar">
             <span className="herdr-term-max-title">
               {(() => {
-                const ma = agentByPane.get(maximizedPaneId)
+                const ma = agentByPaneWithOutputs.get(maximizedPaneId)
                 const pane = allPanes.find(p => p.pane_id === maximizedPaneId)
                 const name = pane ? paneDisplayName(pane, ma) : (ma?.pane_id ?? maximizedPaneId)
                 return ma && ma.agent !== 'dsh' ? `${name} — ${ma.agent}` : name
@@ -501,7 +560,6 @@ export function HerdrPanesView() {
               aria-label={t('pane.restore')}
               onClick={() => {
                 setMaximizedPaneId(null)
-                // 焦点恢复到触发按钮
                 maximizedTriggerRef.current?.focus()
                 maximizedTriggerRef.current = null
               }}
@@ -511,8 +569,8 @@ export function HerdrPanesView() {
           </div>
           <PaneTerminal
             paneId={maximizedPaneId}
-            status={agentByPane.get(maximizedPaneId)?.status}
-            accent={agentByPane.get(maximizedPaneId) ? agentTheme(agentByPane.get(maximizedPaneId)!.agent) : undefined}
+            status={agentByPaneWithOutputs.get(maximizedPaneId)?.status}
+            accent={agentByPaneWithOutputs.get(maximizedPaneId) ? agentTheme(agentByPaneWithOutputs.get(maximizedPaneId)!.agent) : undefined}
             maximized
           />
         </div>

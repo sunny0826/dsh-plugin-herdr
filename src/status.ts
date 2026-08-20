@@ -9,6 +9,7 @@ import { truncateAnsiTail } from './client-logic.ts'
 import { createLogger, createRateLimiter, errText } from './log.ts'
 import { isPathWithinProject } from './paths.ts'
 import { getBoundPaneIds } from './binding-registry.ts'
+import type { HerdrEvent } from './client/types.ts'
 
 /** 面板展示的单个 agent 状态块（wire JSON，客户端直接消费）。 */
 export interface HerdrAgentStatus {
@@ -98,9 +99,11 @@ export interface HerdrStatusSnapshot {
   last_error: string | null
   /** CA-012：数据是否可能过期（距最近一次成功轮询超过 3×pollIntervalMs，或从未成功）。 */
   stale: boolean
+  /** Phase3-2：单次 runCycle 耗时（ms，供诊断；0 = 尚未完成首轮）。 */
+  poll_latency_ms?: number
 }
 
-const OUTPUT_CAP = 8000
+export const OUTPUT_CAP = 8000
 
 /**
  * herdr headless server 状态（socket ping 派生；全量迁移后不再调用
@@ -300,6 +303,12 @@ export class HerdrStatusTracker {
   private readonly agents = new Map<string, HerdrAgentStatus>()
   private timer: NodeJS.Timeout | null = null
   private readonly pollIntervalMs: number
+  private readonly dirtyPaneIds = new Set<string>()
+  private dirtyTopology = false
+  private topologyDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  private heartbeatIntervalMs = 10000
+  private lastHeartbeatAt = 0
+  private eventDisposers: Array<() => void> = []
   private serverInfo: HerdrServerInfo = { status: 'unknown', running: false, version: null, protocol: null, socket: null, session: null, checked_at: 0, installation: 'unknown' }
   // 双拓扑（design-v2 §7.3）：full 全量 + filtered 按项目目录过滤
   private fullTopology: HerdrTopology = { workspaces: [], tabs: [], panes: [] }
@@ -316,6 +325,7 @@ export class HerdrStatusTracker {
   private abort: AbortController | null = null
   private lastError: string | null = null
   private lastSuccessAt = 0
+  private pollLatencyMs = 0
   private readonly staleThresholdMs: number
   // CA-017：轮询错误与 stale 转迁限流告警
   private readonly rateLimited: (key: string, fn: () => void) => void
@@ -393,12 +403,79 @@ export class HerdrStatusTracker {
     }
   }
 
+  private markTopologyDirty(): void {
+    this.dirtyTopology = true
+    if (this.topologyDebounceTimer) clearTimeout(this.topologyDebounceTimer)
+    this.topologyDebounceTimer = setTimeout(() => {
+      this.topologyDebounceTimer = null
+      if (this.abort && !this.abort.signal.aborted) void this.pollTopology(this.abort.signal)
+    }, 200)
+  }
+
+  onHerdrEvent(event: HerdrEvent): void {
+    const data = (event as { data?: Record<string, unknown> }).data ?? {}
+    const type = typeof data.type === 'string' ? data.type : (event as { event?: string }).event ?? ''
+    if (type === 'pane_output_changed') {
+      const paneId = String((data as { pane_id?: unknown }).pane_id ?? '')
+      if (paneId) this.dirtyPaneIds.add(paneId)
+      return
+    }
+    if (type === 'pane_agent_status_changed' || type === 'pane_agent_detected') {
+      const paneId = String((data as { pane_id?: unknown }).pane_id ?? '')
+      const agent = String((data as { agent?: unknown }).agent ?? 'unknown')
+      const status = String((data as { agent_status?: unknown }).agent_status ?? (data as { status?: unknown }).status ?? 'unknown')
+      const message = (data as { message?: unknown }).message != null ? String((data as { message?: unknown }).message) : undefined
+      if (paneId) {
+        this.onAgentState({ pane_id: paneId, agent, status, message })
+        this.lastSuccessAt = Date.now()
+      }
+      return
+    }
+    const topologyTypes = new Set([
+      'workspace_created', 'workspace_updated', 'workspace_metadata_updated', 'workspace_renamed', 'workspace_moved',
+      'workspace_reordered', 'workspace_closed', 'workspace_focused',
+      'tab_created', 'tab_closed', 'tab_renamed', 'tab_moved', 'tab_focused',
+      'pane_created', 'pane_closed', 'pane_updated', 'pane_focused', 'pane_moved', 'pane_exited',
+      'layout_updated',
+    ])
+    if (topologyTypes.has(type)) {
+      this.markTopologyDirty()
+    }
+  }
+
   /** 后台轮询：server 状态 + 拓扑 + agent 列表（兜底）+ 各 pane 输出。 */
   start(): void {
     if (this.timer) return
     this.abort = new AbortController()
     const signal = this.abort.signal
     const tick = () => this.runCycle(signal)
+    // Phase1: 订阅 herdr 事件驱动脏集
+    try {
+      const offA = this.ctx.on('herdr/agent-state', (info: { pane_id: string; agent: string; status: string; message?: string }) => {
+        this.onAgentState(info)
+        this.lastSuccessAt = Date.now()
+      })
+      const offR = this.ctx.on('herdr/resource-changed', (change: { type: string; action: string; id: string }) => {
+        this.onResourceChanged(change)
+        if (change.type === 'workspace' || change.type === 'tab' || change.type === 'pane') {
+          this.markTopologyDirty()
+        }
+      })
+      // 同步支持原始 HerdrEvent（若 forward 已转发原始事件）
+      // 通过 subscribeHerdrEvents 兜底：若 ctx.herdr 支持 onEvent
+      let offRaw: (() => void) | null = null
+      try {
+        const c = this.ctx.herdr as unknown as { onEvent?: (h: (e: unknown) => void) => () => void }
+        if (typeof c.onEvent === 'function') {
+          offRaw = c.onEvent((raw: unknown) => {
+            const ev = raw as HerdrEvent
+            if (ev && typeof (ev as { data?: { type?: string } }).data?.type === 'string') this.onHerdrEvent(ev)
+          })
+        }
+      } catch { /* ignore */ }
+      this.eventDisposers.push(offA, offR)
+      if (offRaw) this.eventDisposers.push(offRaw)
+    } catch { /* ctx 无事件总线时忽略 */ }
     // CA-012：首次立即 tick（不等第一个 interval）
     tick()
     this.timer = setInterval(tick, this.pollIntervalMs)
@@ -410,25 +487,42 @@ export class HerdrStatusTracker {
       clearInterval(this.timer)
       this.timer = null
     }
+    if (this.topologyDebounceTimer) {
+      clearTimeout(this.topologyDebounceTimer)
+      this.topologyDebounceTimer = null
+    }
+    for (const d of this.eventDisposers) try { d() } catch { /* ignore */ }
+    this.eventDisposers.length = 0
     this.abort?.abort()
     this.abort = null
   }
 
   /**
    * CA-012：单飞轮询周期——上一轮未完成则跳过本轮（慢请求不再跨 tick 重叠）；
-   * 四类轮询在同一周期内并行（并发上限 = 4），周期级串行。
+   * 四类轮询在同一周期内并行（并发上限 = 4），周期级串行。Phase1增量：仅拉脏 pane/拓扑，10s 心跳全量 reconciling。
    */
   private runCycle(signal: AbortSignal): void {
     if (this.cycle) return
+    const t0 = Date.now()
     this.cycle = (async () => {
       const errorBefore = this.lastError
+      const now = Date.now()
+      const isHeartbeat = now - this.lastHeartbeatAt > this.heartbeatIntervalMs || now - this.lastSuccessAt > this.heartbeatIntervalMs
+      if (isHeartbeat) this.lastHeartbeatAt = now
+      const needTopology = this.dirtyTopology || isHeartbeat
+      const needAgents = isHeartbeat
+      const dirtyIds = isHeartbeat ? undefined : (this.dirtyPaneIds.size > 0 ? new Set(this.dirtyPaneIds) : undefined)
+      const needOutputs = isHeartbeat || (dirtyIds !== undefined && dirtyIds.size > 0)
       try {
         await Promise.all([
           this.pollServer(signal),
-          this.pollTopology(signal),
-          this.pollAgents(signal),
-          this.pollOutputs(signal),
+          needTopology ? this.pollTopology(signal) : Promise.resolve(),
+          needAgents ? this.pollAgents(signal) : Promise.resolve(),
+          needOutputs ? this.pollOutputs(signal, dirtyIds) : Promise.resolve(),
         ])
+        if (!isHeartbeat && dirtyIds) this.dirtyPaneIds.clear()
+        else if (isHeartbeat) this.dirtyPaneIds.clear()
+        if (needTopology) this.dirtyTopology = false
         // CA-012：仅当本轮无任何轮询错误时才视为“成功刷新”（stale 据此判定）
         if (!signal.aborted && this.lastError === errorBefore) {
           // codex review P2：成功周期显式清空旧错误——一次故障后 last_error 不得永久保留
@@ -443,9 +537,19 @@ export class HerdrStatusTracker {
           }
         }
       } finally {
+        this.pollLatencyMs = Date.now() - t0
         this.cycle = null
       }
     })()
+  }
+
+  getDiagnostics(): { pollLatencyMs: number; dirtyPaneIdsSize: number; dirtyTopology: boolean; lastHeartbeatAt: number } {
+    return {
+      pollLatencyMs: this.pollLatencyMs,
+      dirtyPaneIdsSize: this.dirtyPaneIds.size,
+      dirtyTopology: this.dirtyTopology,
+      lastHeartbeatAt: this.lastHeartbeatAt,
+    }
   }
 
   /**
@@ -465,6 +569,7 @@ export class HerdrStatusTracker {
       last_error: this.lastError,
       stale,
       filter: this.filterInfo,
+      poll_latency_ms: this.pollLatencyMs,
     }
   }
 
@@ -579,29 +684,37 @@ export class HerdrStatusTracker {
     }
   }
 
-  private async pollOutputs(signal: AbortSignal): Promise<void> {
-    for (const [paneId, agent] of this.agents) {
-      if (signal.aborted) return
-      try {
-        // 实测（env-findings v2）：recent_unwrapped 是 herdr 原生未折行快照（逻辑行），
-        // 避免窄终端（约 35~40 列）折行导致卡片日志每行过短、右侧大片空白
-        const { text, truncated } = await this.client.paneRead({ pane_id: paneId, source: 'recent_unwrapped', lines: 300, format: 'ansi' })
+  private async pollOutputs(signal: AbortSignal, paneIds?: Set<string>): Promise<void> {
+    if (paneIds && paneIds.size === 0) return
+    const entries = paneIds ? [...this.agents.entries()].filter(([id]) => paneIds.has(id)) : [...this.agents.entries()]
+    entries.sort((a, b) => {
+      const pa = a[1].status === 'working' ? 0 : 1
+      const pb = b[1].status === 'working' ? 0 : 1
+      if (pa !== pb) return pa - pb
+      return comparePaneId(a[0], b[0])
+    })
+    const CONCURRENCY = 4
+    let idx = 0
+    const worker = async () => {
+      while (idx < entries.length) {
         if (signal.aborted) return
-        const current = agent.output
-        // 仅当内容变化时更新（避免无谓的 updated_at 抖动）
-        if (text !== current) {
-          // ANSI 安全截断：不在 escape/CSI/OSC 中间截断
-          agent.output = truncateAnsiTail(text, OUTPUT_CAP)
-          agent.outputTruncated = truncated || text.length > OUTPUT_CAP
-          agent.updated_at = Date.now()
-        }
-      } catch (err) {
-        // 单个 pane 读取失败忽略（pane 可能已关闭，由 resource-changed 清理）；记录诊断
-        if (!signal.aborted) {
-          this.lastError = `pane read failed (${paneId}): ${errMsg(err)}`
-          this.rateLimited('poll-outputs', () => this.logger.warn('pane read failed (%s): %s', paneId, errMsg(err)))
+        const [paneId, agent] = entries[idx++]
+        try {
+          const { text, truncated } = await this.client.paneRead({ pane_id: paneId, source: 'recent_unwrapped', lines: 300, format: 'ansi' })
+          if (signal.aborted) return
+          if (text !== agent.output) {
+            agent.output = truncateAnsiTail(text, OUTPUT_CAP)
+            agent.outputTruncated = truncated || text.length > OUTPUT_CAP
+            agent.updated_at = Date.now()
+          }
+        } catch (err) {
+          if (!signal.aborted) {
+            this.lastError = `pane read failed (${paneId}): ${errMsg(err)}`
+            this.rateLimited('poll-outputs', () => this.logger.warn('pane read failed (%s): %s', paneId, errMsg(err)))
+          }
         }
       }
     }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, entries.length) }, () => worker()))
   }
 }

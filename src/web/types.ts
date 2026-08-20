@@ -72,4 +72,7 @@ export interface HerdrStatusSnapshot {
   server?: HerdrServerInfo
   topology?: HerdrTopology
   filter?: HerdrFilterInfo
+  stale?: boolean
+  last_error?: string | null
+  poll_latency_ms?: number
 }
