@@ -1,8 +1,9 @@
 // 会话页右侧 pane 状态列表面板（shell.overlay）+ 新建会话（hero）浮层看板 + Herdr logo。
 
 import { useEffect, useId, useRef, useState } from 'react'
-import { StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Pill, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
+  agentTheme,
   ariaStateLabel,
   dotState,
   filterGroupsToSession,
@@ -16,9 +17,10 @@ import { t, useHerdrLang } from './i18n.ts'
 import { useFloatingDrag, SNAP } from './floating-drag.ts'
 import { HERDR_LOGO_PATH_D } from './logo-path.ts'
 import { useHerdrMode } from './mode.ts'
-import { focusPaneInHerdrTab, getSessionId } from './navigation.ts'
+import { getSessionId } from './navigation.ts'
 import { fetchSelfPaneId } from './session-pane.ts'
 import { useHerdrStatus, useGlobalDashboardOpen } from './store.ts'
+import { PaneTerminal } from './pane-terminal.tsx'
 import type { HerdrAgentStatus } from './types.ts'
 
 /**
@@ -62,6 +64,11 @@ export function HerdrPaneList() {
   const panelRef = useRef<HTMLDivElement | null>(null)
   const minRef = useRef<HTMLButtonElement | null>(null)
   const initPosRef = useRef(false)
+  const [viewingPaneId, setViewingPaneId] = useState<string | null>(null)
+  const viewerTriggerRef = useRef<HTMLElement | null>(null)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  const bodyScrollRef = useRef<number>(0)
+  const preViewerPosRef = useRef<{ x: number; y: number } | null>(null)
   // 位置 state：面板与折叠圆钮共享（折叠/展开不丢失位置）
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
   const { handlers: dragHandlers } = useFloatingDrag<HTMLDivElement>(panelRef, pos, setPos, true)
@@ -184,7 +191,87 @@ export function HerdrPaneList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [collapsed])
 
+  // viewer 展开 264→400 后把面板拉回视口内：必须用目标尺寸 400×267
+  // 做 clamp，不能在 rAF 里读 offsetWidth（过渡中仍 ~264，会少算 136px 溢出）。
+  useEffect(() => {
+    if (!viewingPaneId) return
+    if (!preViewerPosRef.current && pos) preViewerPosRef.current = pos
+    const VIEWER_W = 400
+    const VIEWER_H = Math.round(VIEWER_W * 6 / 9) // 267
+    const targetH = VIEWER_H + 80 // header+padding
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    let x = pos ? pos.x : vw - 264 - SNAP
+    let y = pos ? pos.y : SNAP
+    x = Math.min(Math.max(x, SNAP), Math.max(SNAP, vw - VIEWER_W - SNAP))
+    y = Math.min(Math.max(y, SNAP), Math.max(SNAP, vh - targetH - SNAP))
+    const overlay = document.querySelector('[data-shell-overlay]')
+    const sidebar = overlay?.parentElement?.firstElementChild
+    const sidebarW = sidebar instanceof HTMLElement ? sidebar.offsetWidth : 0
+    if (x + VIEWER_W / 2 < vw / 2) x = Math.max(sidebarW + SNAP, x)
+    if (pos && (x !== pos.x || y !== pos.y)) setPos({ x, y })
+    else if (!pos) setPos({ x, y })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewingPaneId])
+
+  const closeViewer = () => {
+    const restore = preViewerPosRef.current
+    preViewerPosRef.current = null
+    setViewingPaneId(null)
+    requestAnimationFrame(() => {
+      viewerTriggerRef.current?.focus()
+      if (bodyRef.current) bodyRef.current.scrollTop = bodyScrollRef.current
+      if (restore) setPos(restore)
+    })
+  }
+
+  useEffect(() => {
+    if (!viewingPaneId) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeViewer()
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewingPaneId])
+
   const panelIdPrefix = useId()
+
+  // 面板会话聚焦（design: herdr-mode-gating §4.4）：只显示包含本会话绑定 pane 的
+  // workspace 组；selfPaneId 未决/无匹配时显示空态。scope 切换保留在 Herdr Tab 工具栏。
+  const agentByPane = new Map<string, HerdrAgentStatus>((snap?.agents ?? []).map(a => [a.pane_id, a]))
+  const groups = filterGroupsToSession(snap?.topology, selfPaneId)
+  const paneCount = groups.reduce((n, g) => n + g.panes.length, 0)
+  const wsCount = groups.length
+
+  const toggleWs = (id: string) => {
+    setCollapsedWs(prev => toggleCollapse(prev, id))
+  }
+
+  useEffect(() => {
+    if (!viewingPaneId) return
+    if (!snap?.topology) return
+    const inGroups = groups.some(g => g.panes.some(p => p.pane_id === viewingPaneId))
+    if (inGroups) return
+    const inTopology = snap.topology.panes.some(p => p.pane_id === viewingPaneId)
+    if (!inTopology) setViewingPaneId(null)
+  }, [viewingPaneId, groups, snap?.topology])
+
+  // 消失自动关闭也需还原位置（非 closeViewer 路径）
+  useEffect(() => {
+    if (viewingPaneId) return
+    if (!preViewerPosRef.current) return
+    const restore = preViewerPosRef.current
+    preViewerPosRef.current = null
+    requestAnimationFrame(() => setPos(restore))
+  }, [viewingPaneId])
+
+  const viewingPane = viewingPaneId
+    ? (groups.flatMap(g => g.panes).find(p => p.pane_id === viewingPaneId)
+      ?? snap?.topology?.panes.find(p => p.pane_id === viewingPaneId)
+      ?? null)
+    : null
+  const viewingAgent = viewingPaneId ? agentByPane.get(viewingPaneId) : undefined
 
   // 非 herdr 模式不渲染面板（D1 已确认：与 Tab/胶囊一致门控）；全局面板打开时隐藏
   if (!inSession || !herdrMode || gdOpen) return null
@@ -208,21 +295,11 @@ export function HerdrPaneList() {
     )
   }
 
-  // 面板会话聚焦（design: herdr-mode-gating §4.4）：只显示包含本会话绑定 pane 的
-  // workspace 组；selfPaneId 未决/无匹配时显示空态。scope 切换保留在 Herdr Tab 工具栏。
-  const agentByPane = new Map<string, HerdrAgentStatus>((snap?.agents ?? []).map(a => [a.pane_id, a]))
-  const groups = filterGroupsToSession(snap?.topology, selfPaneId)
-  const paneCount = groups.reduce((n, g) => n + g.panes.length, 0)
-  const wsCount = groups.length
-
-  const toggleWs = (id: string) => {
-    setCollapsedWs(prev => toggleCollapse(prev, id))
-  }
-
   return (
     <aside
       ref={panelRef}
       className="pane-list-panel"
+      data-viewer={viewingPaneId ? '1' : undefined}
       style={pos ? { left: pos.x, top: pos.y, right: 'auto' } : undefined}
     >
       <div className="pane-list-head" {...dragHandlers}>
@@ -241,79 +318,116 @@ export function HerdrPaneList() {
         </button>
       </div>
       {error ? <div className="herdr-pane-list-error">{t('view.statusError', { error })}</div> : null}
-      <div className="pane-list-body">
-        {groups.length === 0 ? (
-          <div className="herdr-empty">
-            {selfPaneId || paneMisses >= 3 ? t('panel.noPane') : t('panel.fetchingPane')}
-          </div>
-        ) : groups.map(g => (
-          <div key={g.workspace.workspace_id} className="pl-group" data-collapsed={collapsedWs.has(g.workspace.workspace_id) || undefined}>
-            <div
-              id={`${panelIdPrefix}-${g.workspace.workspace_id}-toggle`}
-              className="pl-group-head"
-              role="button"
-              tabIndex={0}
-              aria-expanded={!collapsedWs.has(g.workspace.workspace_id)}
-              aria-controls={`${panelIdPrefix}-${g.workspace.workspace_id}-body`}
-              onClick={() => toggleWs(g.workspace.workspace_id)}
-              onKeyDown={e => {
-                const action = paneKeyboardHandlers(e.key)
-                if (!action.trigger) return
-                if (action.preventDefault) e.preventDefault()
-                toggleWs(g.workspace.workspace_id)
-              }}
-            >
-              <svg className="chev" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4z" /></svg>
-              <span>{g.workspace.label || g.workspace.workspace_id}</span>
-              <span className="ws">{g.workspace.workspace_id}</span>
-              <span className="n">{g.panes.length}</span>
+      {viewingPaneId ? (() => {
+        const viewerStatus = viewingAgent?.status ?? viewingPane?.agent_status
+        const viewerDisplayState = paneDisplayState(viewerStatus)
+        const viewerStateLabel = t(ariaStateLabel(viewerDisplayState))
+        const viewerMuted = viewerDisplayState === 'unknown'
+        const viewerIsSelf = viewingPaneId === selfPaneId
+        const viewerName = viewingPane ? paneDisplayName(viewingPane, viewingAgent) : viewingPaneId
+        return (
+          <div className="pane-list-viewer" data-pane-id={viewingPaneId}>
+            <div className="pane-list-viewer-head" {...dragHandlers}>
+              <StateDot state={dotState(viewerStatus)} className={viewerMuted ? 'herdr-dot-muted' : undefined} />
+              {viewingAgent ? <span className="herdr-agent-accent" data-accent={agentTheme(viewingAgent.agent)} title={viewingAgent.agent} /> : null}
+              <span className="pane-list-viewer-title" title={viewingPaneId}>{viewerName}</span>
+              <Pill className="herdr-agent-pill">
+                {viewingAgent ? <span className="herdr-agent-name">{viewingAgent.agent}</span> : <span className="herdr-agent-name">—</span>}
+                <span className="herdr-state-text" data-state={viewerDisplayState} aria-label={viewerStateLabel}>{viewerStateLabel}</span>
+              </Pill>
+              {viewerIsSelf ? <span className="pl-self-tag">{t('panel.selfTag')}</span> : null}
+              <button type="button" className="pane-list-viewer-close" aria-label={t('panel.viewerClose')} onPointerDown={e => e.stopPropagation()} onClick={closeViewer}>✕</button>
             </div>
-            <div
-              id={`${panelIdPrefix}-${g.workspace.workspace_id}-body`}
-              className="pl-group-body"
-            >
-              {g.panes.map(pane => {
-                const agent = agentByPane.get(pane.pane_id)
-                const status = agent?.status ?? pane.agent_status
-                const displayState = paneDisplayState(status)
-                const isSelf = pane.pane_id === selfPaneId
-                const muted = displayState === 'unknown'
-                const stateLabel = t(ariaStateLabel(displayState))
-                const displayName = paneDisplayName(pane, agent)
-                const rowLabel = isSelf ? t('panel.selfTitle', { id: displayName }) : t('panel.paneTitle', { id: displayName })
-                return (
-                  <div
-                    key={pane.pane_id}
-                    className="pl-row"
-                    role="button"
-                    tabIndex={0}
-                    data-self={isSelf || undefined}
-                    data-pane-id={pane.pane_id}
-                    aria-label={rowLabel}
-                    title={rowLabel}
-                    onPointerDown={e => e.stopPropagation()}
-                    onClick={() => focusPaneInHerdrTab(pane.pane_id)}
-                    onKeyDown={e => {
-                      const action = paneKeyboardHandlers(e.key)
-                      if (!action.trigger) return
-                      if (action.preventDefault) e.preventDefault()
-                      focusPaneInHerdrTab(pane.pane_id)
-                    }}
-                  >
-                    <StateDot state={dotState(status)} className={muted ? 'herdr-dot-muted' : undefined} />
-                    <span className="pl-paneid" title={pane.pane_id}>{paneDisplayName(pane, agent)}</span>
-                    <span className="pl-agent">{agent?.agent ?? '—'}</span>
-                    {isSelf ? <span className="pl-self-tag">{t('panel.selfTag')}</span> : null}
-                    <span className="pl-state" data-state={displayState} aria-label={stateLabel}>
-                      {stateLabel}
-                    </span>
-                  </div>
-                )
-              })}
+            <div className="pane-list-viewer-body">
+              <PaneTerminal paneId={viewingPaneId} readOnly status={viewerStatus} accent={viewingAgent ? agentTheme(viewingAgent.agent) : undefined} />
             </div>
           </div>
-        ))}
-      </div>
+        )
+      })() : (
+        <div ref={bodyRef} className="pane-list-body">
+          {groups.length === 0 ? (
+            <div className="herdr-empty">
+              {selfPaneId || paneMisses >= 3 ? t('panel.noPane') : t('panel.fetchingPane')}
+            </div>
+          ) : groups.map(g => (
+            <div key={g.workspace.workspace_id} className="pl-group" data-collapsed={collapsedWs.has(g.workspace.workspace_id) || undefined}>
+              <div
+                id={`${panelIdPrefix}-${g.workspace.workspace_id}-toggle`}
+                className="pl-group-head"
+                role="button"
+                tabIndex={0}
+                aria-expanded={!collapsedWs.has(g.workspace.workspace_id)}
+                aria-controls={`${panelIdPrefix}-${g.workspace.workspace_id}-body`}
+                onClick={() => toggleWs(g.workspace.workspace_id)}
+                onKeyDown={e => {
+                  const action = paneKeyboardHandlers(e.key)
+                  if (!action.trigger) return
+                  if (action.preventDefault) e.preventDefault()
+                  toggleWs(g.workspace.workspace_id)
+                }}
+              >
+                <svg className="chev" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4z" /></svg>
+                <span>{g.workspace.label || g.workspace.workspace_id}</span>
+                <span className="ws">{g.workspace.workspace_id}</span>
+                <span className="n">{g.panes.length}</span>
+              </div>
+              <div
+                id={`${panelIdPrefix}-${g.workspace.workspace_id}-body`}
+                className="pl-group-body"
+              >
+                {g.panes.map(pane => {
+                  const agent = agentByPane.get(pane.pane_id)
+                  const status = agent?.status ?? pane.agent_status
+                  const displayState = paneDisplayState(status)
+                  const isSelf = pane.pane_id === selfPaneId
+                  const muted = displayState === 'unknown'
+                  const stateLabel = t(ariaStateLabel(displayState))
+                  const displayName = paneDisplayName(pane, agent)
+                  const rowLabel = isSelf ? t('panel.selfTitle', { id: displayName }) : t('panel.paneTitle', { id: displayName })
+                  return (
+                    <div
+                      key={pane.pane_id}
+                      className="pl-row"
+                      role="button"
+                      tabIndex={isSelf ? -1 : 0}
+                      data-self={isSelf || undefined}
+                      data-disabled={isSelf || undefined}
+                      aria-disabled={isSelf ? 'true' as const : undefined}
+                      data-pane-id={pane.pane_id}
+                      aria-label={rowLabel}
+                      title={isSelf ? t('panel.viewerSelfDisabled') : rowLabel}
+                      onPointerDown={e => e.stopPropagation()}
+                      onClick={e => {
+                        if (isSelf) return
+                        bodyScrollRef.current = bodyRef.current?.scrollTop ?? 0
+                        viewerTriggerRef.current = e.currentTarget as HTMLElement
+                        setViewingPaneId(pane.pane_id)
+                      }}
+                      onKeyDown={e => {
+                        const action = paneKeyboardHandlers(e.key)
+                        if (!action.trigger) return
+                        if (action.preventDefault) e.preventDefault()
+                        if (isSelf) return
+                        bodyScrollRef.current = bodyRef.current?.scrollTop ?? 0
+                        viewerTriggerRef.current = e.currentTarget as HTMLElement
+                        setViewingPaneId(pane.pane_id)
+                      }}
+                    >
+                      <StateDot state={dotState(status)} className={muted ? 'herdr-dot-muted' : undefined} />
+                      <span className="pl-paneid" title={pane.pane_id}>{paneDisplayName(pane, agent)}</span>
+                      <span className="pl-agent">{agent?.agent ?? '—'}</span>
+                      {isSelf ? <span className="pl-self-tag">{t('panel.selfTag')}</span> : null}
+                      <span className="pl-state" data-state={displayState} aria-label={stateLabel}>
+                        {stateLabel}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </aside>
   )
 }

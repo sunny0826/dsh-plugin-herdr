@@ -103,11 +103,12 @@ export interface PaneTerminalProps {
   status?: string
   accent?: AgentAccent
   maximized?: boolean
+  readOnly?: boolean
 }
 
 type IoMode = 'observer' | 'controlling' | 'snapshot'
 
-export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminalProps) {
+export function PaneTerminal({ paneId, status, accent, maximized, readOnly = false }: PaneTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -343,6 +344,7 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
     void terminalSessionStore.releaseControl(paneId, currentSize()).catch(() => {})
   }
   const onTerminalClick = (): void => {
+    if (readOnly) return
     if (ioModeRef.current === 'observer' && !conflict) requestControl(false)
   }
 
@@ -361,7 +363,8 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
     return () => observer.disconnect()
   }, [])
 
-  const readOnly = ioModeRef.current === 'observer' && !compatMode
+  const readOnlyDerived = ioModeRef.current === 'observer' && !compatMode
+  const showReadOnlyBadge = !readOnly && readOnlyDerived
 
   return (
     <div className={`herdr-term ${maximized ? 'herdr-term-maximized' : ''}`} data-accent={accent ?? undefined}>
@@ -384,7 +387,7 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
       {historyIncomplete && compatMode ? (
         <div className="herdr-term-warning" role="status">{t('pane.terminalHistoryIncomplete')}</div>
       ) : null}
-      {readOnly ? (
+      {showReadOnlyBadge ? (
         <button type="button" className="herdr-term-ro" role="status" onClick={() => requestControl(false)}>
           {t('pane.terminalReadOnly')} · {t('pane.terminalClickToControl')}
         </button>
@@ -392,7 +395,7 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
       {compatMode ? (
         <div className="herdr-term-compat" role="status">{t('pane.terminalCompatMode')}</div>
       ) : null}
-      {ioModeRef.current === 'controlling' ? (
+      {!readOnly && ioModeRef.current === 'controlling' ? (
         <button type="button" className="herdr-term-ctrl" role="status" onClick={releaseControl}>
           {t('pane.terminalReleaseControl')}
         </button>
@@ -402,15 +405,17 @@ export function PaneTerminal({ paneId, status, accent, maximized }: PaneTerminal
           <span>{t('pane.terminalControlledByOther')}</span>
           <div className="herdr-term-conflict-actions">
             <button type="button" onClick={() => setConflict(false)}>{t('pane.terminalContinueObserve')}</button>
-            {confirmTakeover ? (
-              <>
-                <span>{t('pane.terminalTakeoverConfirm')}</span>
-                <button type="button" onClick={() => requestControl(true)}>{t('pane.terminalTakeover')}</button>
-                <button type="button" onClick={() => setConfirmTakeover(false)}>{t('view.close')}</button>
-              </>
-            ) : (
-              <button type="button" onClick={() => setConfirmTakeover(true)}>{t('pane.terminalTakeover')}</button>
-            )}
+            {!readOnly ? (
+              confirmTakeover ? (
+                <>
+                  <span>{t('pane.terminalTakeoverConfirm')}</span>
+                  <button type="button" onClick={() => requestControl(true)}>{t('pane.terminalTakeover')}</button>
+                  <button type="button" onClick={() => setConfirmTakeover(false)}>{t('view.close')}</button>
+                </>
+              ) : (
+                <button type="button" onClick={() => setConfirmTakeover(true)}>{t('pane.terminalTakeover')}</button>
+              )
+            ) : null}
           </div>
         </div>
       ) : null}

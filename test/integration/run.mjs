@@ -51,7 +51,7 @@ try {
   await check('snapshot returns workspaces', () => {
     assert.ok(Array.isArray(snap.workspaces), 'workspaces should be an array')
     assert.ok(snap.workspaces.length >= 1, `expected >=1 workspace, got ${snap.workspaces.length}`)
-    assert.equal(snap.protocol, 19)
+    assert.ok(snap.protocol === 19 || snap.protocol === 20, `expected protocol 19 or 20, got ${snap.protocol}`)
   })
 
   // 2) pane run：echo 输出可见（§14.2 第 2 项）

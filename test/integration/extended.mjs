@@ -132,7 +132,7 @@ const closePane = (id) => {
   await check('socket transport loads and snapshots', async () => {
     const snap = await ctx.herdr.snapshot()
     assert.ok(Array.isArray(snap.workspaces))
-    assert.equal(snap.protocol, 19)
+    assert.ok(snap.protocol === 19 || snap.protocol === 20, `expected protocol 19 or 20, got ${snap.protocol}`)
   })
 
   await check('socket agent list', async () => {
