@@ -89,6 +89,13 @@ export function openHerdrEvents(signal: AbortSignal, onEvent: (e: SseEvent) => v
           if (Number.isSafeInteger(revision)) lastRevision = revision
           onEvent({ type: 'output', pane_id, revision, id: rawId } as SseEvent)
         }
+      } else if (rawEvent === 'term') {
+        // 终端会话帧转发：服务端不带 id，不推进 lastRevision
+        const session_id = String((data as { session_id?: string }).session_id ?? '')
+        const pane_id = String((data as { pane_id?: string }).pane_id ?? '')
+        if (session_id && pane_id) {
+          onEvent({ type: 'term', session_id, pane_id, event: (data as { event?: unknown }).event } as SseEvent)
+        }
       } else if (rawEvent === 'agent_status') {
         const pane_id = String((data as { pane_id?: string }).pane_id ?? '')
         if (pane_id) {
@@ -157,11 +164,46 @@ export function openHerdrEvents(signal: AbortSignal, onEvent: (e: SseEvent) => v
   return { close: abortAll }
 }
 
+// ---------------------------------------------------------------------------
+// /herdr-events 单例事件总线：整个页面共享一条常驻 SSE 连接。浏览器对单域名
+// 的并发连接数有限，status store 与逐卡 observer 若各开一条会把配额耗尽，
+// 进而出现连接饥饿（Failed to fetch / bootstrap 超时）。订阅者退订不关流。
+// ---------------------------------------------------------------------------
+type HerdrEventListener = (ev: SseEvent) => void
+const herdrEventListeners = new Set<HerdrEventListener>()
+let herdrEventStreamStarted = false
+
+function ensureHerdrEventStream(): void {
+  if (herdrEventStreamStarted) return
+  if (typeof window === 'undefined') return
+  herdrEventStreamStarted = true
+  const ctrl = new AbortController()
+  // 页面生命周期常驻：ctrl 不暴露，断线由 openHerdrEvents 内部退避重连
+  openHerdrEvents(ctrl.signal, ev => {
+    for (const l of [...herdrEventListeners]) {
+      try { l(ev) } catch { /* ignore */ }
+    }
+  })
+}
+
+/** 订阅共享 herdr 事件流；返回退订函数。流为页面级单例，不因退订关闭。 */
+export function subscribeHerdrEvents(listener: HerdrEventListener): () => void {
+  herdrEventListeners.add(listener)
+  ensureHerdrEventStream()
+  return () => { herdrEventListeners.delete(listener) }
+}
+
+/** 订阅指定 pane 的 output 变化（快照模式按此防抖重拉）。 */
+export function subscribePaneOutput(paneId: string, cb: (revision: number) => void): () => void {
+  return subscribeHerdrEvents(ev => {
+    if (ev.type === 'output' && ev.pane_id === paneId) cb(ev.revision)
+  })
+}
+
 function sseOpen(signal: AbortSignal, onEvent: (e: SseEvent) => void): { close(): void } {
-  const wrapped = (ev: SseEvent): void => {
-    onEvent(ev)
-  }
-  return openHerdrEvents(signal, wrapped)
+  const off = subscribeHerdrEvents(onEvent)
+  signal.addEventListener('abort', off, { once: true })
+  return { close: off }
 }
 
 export async function fetchPaneOutputs(paneIds: string[], lines = 40): Promise<Map<string, string>> {
@@ -380,38 +422,4 @@ export async function fetchTerminalBootstrap(
   const body = await resp.json() as { ok?: boolean; text?: string; revision?: number; truncated?: boolean; error?: string }
   if (!body.ok) throw new Error(body.error ?? `terminal-bootstrap HTTP ${resp.status}`)
   return { text: body.text ?? '', revision: body.revision, truncated: body.truncated === true }
-}
-
-export interface TerminalChangeResult {
-  changed: boolean
-  revision: number
-  /** 增量帧（base64 编码的 ANSI bytes），存在时可直接追加而无需全量 bootstrap。 */
-  bytes?: string
-  /** 兼容别名：服务端可能以 delta 字段返回增量。 */
-  delta?: string
-  /** 增量帧是否为全量 full（需 rebase 清屏）。 */
-  full?: boolean
-}
-
-/** 等待 pane revision 变化；服务端由 events.wait 驱动，超时表示当前无新输出。
- *  当服务端在 pane_output_changed 事件中附带增量 bytes/delta 时直接返回 Delta，
- *  调用方可 `rebaseTerminalFrame` 后 `terminal.write` 追加，无需全量 `fetchTerminalBootstrap`。 */
-export async function waitForTerminalChange(
-  paneId: string,
-  afterRevision: number,
-  signal?: AbortSignal,
-): Promise<TerminalChangeResult> {
-  const url = new URL('/herdr-pane-terminal-wait', window.location.origin)
-  url.searchParams.set('pane_id', paneId)
-  url.searchParams.set('after_revision', String(afterRevision))
-  const resp = await fetch(url.toString(), { signal })
-  const body = await resp.json() as { ok?: boolean; changed?: boolean; revision?: number; bytes?: string; delta?: string; full?: boolean; error?: string }
-  if (!body.ok) throw new Error(body.error ?? `terminal-wait HTTP ${resp.status}`)
-  return {
-    changed: body.changed === true,
-    revision: typeof body.revision === 'number' ? body.revision : afterRevision,
-    ...(typeof body.bytes === 'string' ? { bytes: body.bytes } : {}),
-    ...(typeof body.delta === 'string' ? { delta: body.delta } : {}),
-    ...(typeof body.full === 'boolean' ? { full: body.full } : {}),
-  }
 }

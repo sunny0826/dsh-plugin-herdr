@@ -312,7 +312,7 @@ export function HerdrPaneList() {
               <button type="button" className="pane-list-viewer-close" aria-label={t('panel.viewerClose')} onPointerDown={e => e.stopPropagation()} onClick={closeViewer}>✕</button>
             </div>
             <div className="pane-list-viewer-body">
-              <PaneTerminal paneId={viewingPaneId} readOnly status={viewerStatus} accent={viewingAgent ? agentTheme(viewingAgent.agent) : undefined} />
+              <PaneTerminal paneId={viewingPaneId} status={viewerStatus} accent={viewingAgent ? agentTheme(viewingAgent.agent) : undefined} />
             </div>
           </div>
         )

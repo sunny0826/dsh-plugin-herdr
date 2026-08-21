@@ -276,3 +276,62 @@ test('manager: observer disconnect past grace reaps session', async () => {
   await new Promise(r => setTimeout(r, 90))
   assert.equal(manager.report().activeProcesses, 0, 'session reaped after grace when no re-subscribe')
 })
+
+test('manager: global listener receives ready + frames without per-session subscribe', async () => {
+  const { manager, children } = setup()
+  const evs: Array<{ sid: string; pid: string; ev: BrowserTerminalEvent }> = []
+  const off = manager.addGlobalListener((sid, pid, ev) => evs.push({ sid, pid, ev }))
+  const { sessionId } = manager.start(OBSERVE)
+  children[0]!.emitFrame({ seq: 1, full: true, width: 80, height: 24 })
+  children[0]!.emitFrame({ seq: 2 })
+  assert.equal(evs.length, 3, 'ready + first full + diff')
+  assert.equal(evs[0]!.sid, sessionId)
+  assert.equal(evs[0]!.pid, 'w1:p1')
+  assert.equal(evs[0]!.ev.type, 'ready')
+  assert.equal(evs[1]!.ev.type, 'frame')
+  if (evs[1]!.ev.type === 'frame') assert.equal(evs[1]!.ev.full, true)
+  // closed 也经全局转发（emit 路径）
+  void manager.release(sessionId)
+  assert.ok(evs.some(e => e.ev.type === 'closed'))
+  // 退订后不再收到
+  off()
+  const n = evs.length
+  const s2 = manager.start(OBSERVE)
+  children[1]!.emitFrame({ seq: 1, full: true })
+  assert.equal(evs.length, n, 'unsubscribed global listener must not fire')
+  void manager.release(s2.sessionId)
+})
+
+test('manager: replayLatestFull returns latest full baseline; liveSessions lists armed sessions', () => {
+  const { manager, children } = setup()
+  const { sessionId } = manager.start(OBSERVE)
+  assert.equal(manager.replayLatestFull(sessionId), null, 'no full yet')
+  assert.deepEqual(manager.liveSessions(), [], 'not armed yet')
+  children[0]!.emitFrame({ seq: 1, full: true })
+  children[0]!.emitFrame({ seq: 2 })
+  const full = manager.replayLatestFull(sessionId)
+  assert.ok(full && full.type === 'frame' && full.full === true && full.seq === 1)
+  const live = manager.liveSessions()
+  assert.equal(live.length, 1)
+  assert.equal(live[0]!.sessionId, sessionId)
+  assert.equal(live[0]!.paneId, 'w1:p1')
+  assert.equal(live[0]!.generation, 1)
+})
+
+test('manager: global client disconnect reaps sessions after grace; reconnect cancels', async () => {
+  const { manager, children } = setup({ disconnectGraceMs: 30 })
+  const { sessionId } = manager.start(OBSERVE)
+  children[0]!.emitFrame({ seq: 1, full: true })
+  // 全局客户端断开 → 宽限期后回收
+  manager.onGlobalClientDisconnect()
+  await new Promise(r => setTimeout(r, 80))
+  assert.equal(manager.liveSessions().length, 0, 'session must be reaped after disconnect grace')
+  // 再来一个会话：断开后宽限期内重连 → 取消回收
+  const s2 = manager.start(OBSERVE)
+  children[1]!.emitFrame({ seq: 1, full: true })
+  manager.onGlobalClientDisconnect()
+  manager.onGlobalClientConnect()
+  await new Promise(r => setTimeout(r, 80))
+  assert.equal(manager.liveSessions().length, 1, 'reconnect within grace must cancel reaping')
+  assert.equal(manager.liveSessions()[0]!.sessionId, s2.sessionId)
+})

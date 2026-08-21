@@ -53,9 +53,9 @@ test('pane-terminal.tsx: targets a stable pane id and surfaces input failures', 
   assert.doesNotMatch(source, /agent\?\.pane_id/, 'input must not depend on optional agent state')
 })
 
-test('pane-terminal.tsx: waits for output revisions instead of interval polling', () => {
-  assert.match(source, /waitForTerminalChange/, 'must use the event-driven terminal wait endpoint')
-  assert.doesNotMatch(source, /setInterval/, 'must not poll terminal output on a fixed interval')
+test('pane-terminal.tsx: snapshot mode is driven by shared output events', () => {
+  assert.match(source, /subscribePaneOutput/, 'must subscribe to shared /herdr-events output events')
+  assert.doesNotMatch(source, /waitForTerminalChange/, 'must not use the removed per-card terminal wait long-poll')
 })
 
 test('pane-terminal.tsx: handles resize with FitAddon', () => {

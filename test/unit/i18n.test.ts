@@ -83,12 +83,10 @@ test('status keys: 5-state display labels are bilingual and localized', () => {
 
 test('new keys: status, tab, list, and error summaries are bilingual', () => {
   setHerdrLang('zh')
-  assert.equal(t('view.statusSummary'), '窗格状态摘要')
   assert.equal(t('view.statusError', { error: '离线' }), 'herdr 状态：离线')
   assert.equal(t('view.tabId', { id: 't1' }), '标签页 t1')
   assert.equal(t('view.listMeta', { workspaces: 1, panes: 3 }), '1 个工作区 · 3 个窗格')
   setHerdrLang('en')
-  assert.equal(t('view.statusSummary'), 'Pane status summary')
   assert.equal(t('view.statusError', { error: 'offline' }), 'herdr status: offline')
   assert.equal(t('view.tabId', { id: 't1' }), 'tab t1')
   assert.equal(t('view.listMeta', { workspaces: 1, panes: 3 }), '1 workspaces · 3 panes')

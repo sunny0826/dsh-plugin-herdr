@@ -36,8 +36,8 @@ import {
   reorderPanes,
   savePaneOrder,
   shouldAutoExpand,
+  shouldPushTerminalResize,
   stackedBarSegments,
-  statusSortPriority,
   stripAnsi,
   terminalFocusTransition,
   terminalScrollTransition,
@@ -114,14 +114,6 @@ test('stackedBarSegments: zero counts are dropped, single state works', () => {
   assert.deepEqual(stackedBarSegments(['idle', 'idle', 'idle']), [
     { state: 'idle', count: 3, ratio: 1 },
   ])
-})
-
-test('statusSortPriority: blocked highest, unknown lowest', () => {
-  assert.equal(statusSortPriority('blocked'), 0)
-  assert.equal(statusSortPriority('working'), 1)
-  assert.equal(statusSortPriority('idle'), 2)
-  assert.equal(statusSortPriority('done'), 3)
-  assert.equal(statusSortPriority('unknown'), 4)
 })
 
 test('ariaStateLabel: returns i18n key for each display state', () => {
@@ -1160,4 +1152,9 @@ test('rebaseTerminalFrame: full frame clears visible screen and homes cursor', (
     0x1b, 0x5b, 0x32, 0x4a, 0x1b, 0x5b, 0x48, 0x41, 0x42,
   ])
   assert.strictEqual(rebaseTerminalFrame(frame, false), frame)
+})
+
+test('shouldPushTerminalResize: 仅控制态回传 resize（快照模式无 session）', () => {
+  assert.equal(shouldPushTerminalResize('controlling'), true)
+  assert.equal(shouldPushTerminalResize('snapshot'), false)
 })

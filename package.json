@@ -1,6 +1,7 @@
 {
   "name": "dsh-plugin-herdr",
-  "version": "0.1.0",
+  "version": "0.0.1",
+  "license": "MIT",
   "type": "module",
   "main": "lib/index.mjs",
   "types": "lib/index.d.mts",
@@ -8,6 +9,7 @@
     "lib",
     "cordis.patch.yml",
     "README.md",
+    "LICENSE",
     "presets"
   ],
   "exports": {
@@ -37,7 +39,9 @@
     "test:integration": "pnpm build && node test/integration/run.mjs && node test/integration/extended.mjs && node test/integration/events.mjs && node test/integration/close-rename.mjs && node test/integration/terminal-session.mjs",
     "typecheck": "tsc --noEmit",
     "quality": "pnpm typecheck && pnpm gen:types:check && pnpm test",
-    "prepare": "pnpm build"
+    "prepare": "pnpm build",
+    "dsh:blank": "node scripts/blank-dsh.mjs",
+    "dsh:blank:reset": "node scripts/blank-dsh.mjs --reset"
   },
   "dsh": {
     "bundle": {
