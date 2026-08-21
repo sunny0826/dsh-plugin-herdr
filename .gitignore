@@ -7,6 +7,7 @@ dist/
 
 # 本地测试环境
 .dsh-home/
+.dsh-blank/
 scratch-plugin/
 
 # 日志与临时文件

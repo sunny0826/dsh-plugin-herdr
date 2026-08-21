@@ -54,6 +54,9 @@ export interface AttachCursor {
 
 type Subscriber = (ev: BrowserTerminalEvent) => void
 
+/** 全局帧监听器：/herdr-events 单流复用（web 端所有卡片共享一条 SSE，替代 per-session SSE）。 */
+export type GlobalFrameListener = (sessionId: string, paneId: string, ev: BrowserTerminalEvent) => void
+
 /** manager 诊断上报形状（Phase 4 指标/诊断面板数据源）。 */
 export interface TerminalSessionReport {
   activeProcesses: number
@@ -99,6 +102,7 @@ export class TerminalSessionManager {
   private readonly maxLine: number
   private readonly replayCap: number
   private readonly controllers = new Set<string>()
+  private readonly globalListeners = new Set<GlobalFrameListener>()
 
   constructor(deps: TerminalSessionManagerDeps) {
     this.deps = deps
@@ -218,6 +222,46 @@ export class TerminalSessionManager {
     this.controllers.clear()
   }
 
+  /** 注册全局帧监听器（/herdr-events 单流转发），返回退订函数。 */
+  addGlobalListener(cb: GlobalFrameListener): () => void {
+    this.globalListeners.add(cb)
+    return () => { this.globalListeners.delete(cb) }
+  }
+
+  /** 全局客户端（/herdr-events 单流）接入：取消所有会话挂起的断开宽限回收。 */
+  onGlobalClientConnect(): void {
+    for (const s of this.sessions.values()) {
+      if (s.graceTimer) { clearTimeout(s.graceTimer); s.graceTimer = undefined }
+    }
+  }
+
+  /** 最后一个全局客户端断开：所有 live 会话进入断开宽限期（web 端不再持有
+   *  per-session SSE，浏览器关页不会逐会话通知，必须由单流断开统一兜底回收）。 */
+  onGlobalClientDisconnect(): void {
+    for (const s of [...this.sessions.values()]) this.onClientDisconnect(s.sessionId)
+  }
+
+  /** 当前 live 会话清单（/herdr-events 新连接回放基线用）。 */
+  liveSessions(): Array<{ sessionId: string; paneId: string; mode: TerminalSessionMode; generation: number }> {
+    const out: Array<{ sessionId: string; paneId: string; mode: TerminalSessionMode; generation: number }> = []
+    for (const s of this.sessions.values()) {
+      if (s.state === 'live' && s.fullArmed) {
+        out.push({ sessionId: s.sessionId, paneId: s.paneId, mode: s.mode, generation: s.generation })
+      }
+    }
+    return out
+  }
+
+  /** 最新 full 帧（generation 内基线），供 /herdr-events 新连接补齐重连缺口。 */
+  replayLatestFull(sessionId: string): Extract<BrowserTerminalEvent, { type: 'frame' }> | null {
+    const s = this.sessions.get(sessionId)
+    if (!s || s.state !== 'live' || !s.fullArmed) return null
+    for (let i = s.replay.length - 1; i >= 0; i--) {
+      if (s.replay[i]!.event.full) return s.replay[i]!.event
+    }
+    return null
+  }
+
   /** 订阅 session 事件流，返回退订函数。v1 以单订阅方为主。 */
   subscribe(sessionId: string, cursor: AttachCursor, cb: Subscriber): () => void {
     const s = this.sessions.get(sessionId)
@@ -246,11 +290,12 @@ export class TerminalSessionManager {
     else out.resume()
   }
 
-  /** 写 controller stdin 命令；仅 mode=control 且 child 存活。 */
+  /** 写 stdin 命令；resize 允许 observe/control，input/scroll 仅 control。 */
   writeCommand(sessionId: string, payload: string): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.state === 'closed') throw new TerminalSessionError('terminal_session_not_found', 'session 不存在')
-    if (s.mode !== 'control') throw new TerminalSessionError('terminal_session_forbidden', 'controller-only 命令')
+    const isResize = payload.includes('"terminal.resize"')
+    if (s.mode !== 'control' && !isResize) throw new TerminalSessionError('terminal_session_forbidden', 'controller-only 命令')
     const input = s.child?.stdin
     if (!input || !input.writable || s.child!.exitCode !== null) {
       throw new TerminalSessionError('terminal_session_process_exited', 'controller 子进程已退出')
@@ -410,6 +455,7 @@ export class TerminalSessionManager {
     this.enqueueReplay(s, ev)
     if (firstFull) {
       // 等待该 generation ready 的订阅方先收 ready，再收首个 full
+      const ready: BrowserTerminalEvent = { type: 'ready', sessionId: s.sessionId, mode: s.mode, generation: s.generation, resumed: false, afterSeq: 0 }
       for (const sub of s.subscribers) {
         if (s.readyBySub.get(sub) === false) {
           this.sendReady(s, sub, false, 0)
@@ -417,6 +463,9 @@ export class TerminalSessionManager {
           sub(ev)
         }
       }
+      // 全局单流监听者无 per-session 订阅，ready + 首帧在此单独转发
+      this.emitGlobal(s, ready)
+      this.emitGlobal(s, ev)
     } else {
       this.emit(s, ev)
     }
@@ -459,6 +508,15 @@ export class TerminalSessionManager {
   private emit(s: Session, ev: BrowserTerminalEvent): void {
     for (const sub of s.subscribers) {
       try { sub(ev) } catch { /* 路由层写回失败由其自处理 */ }
+    }
+    this.emitGlobal(s, ev)
+  }
+
+  /** 全局转发（/herdr-events 单流）：不依赖 per-session 订阅方存在。 */
+  private emitGlobal(s: Session, ev: BrowserTerminalEvent): void {
+    if (this.globalListeners.size === 0) return
+    for (const cb of this.globalListeners) {
+      try { cb(s.sessionId, s.paneId, ev) } catch { /* 路由层容错 */ }
     }
   }
 

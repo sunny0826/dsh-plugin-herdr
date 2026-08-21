@@ -3,22 +3,19 @@ import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   agentTheme,
   applyPaneOrder,
-  ariaStateLabel,
   filterGroupsToSession,
   isDshPane,
   loadPaneOrder,
   paneDisplayName,
-  paneDisplayState,
   reorderPanes,
   savePaneOrder,
-  statusSortPriority,
 } from '../client-logic.ts'
 import { t, useHerdrLang } from './i18n.ts'
 import { getPendingFocusPane, setPendingFocusPane } from './navigation.ts'
 import { useSelfPaneId } from './self-pane-store.ts'
 import { HerdrServerBanner } from './server-banner.tsx'
 import { HerdrLogo } from './pane-list.tsx'
-import { fetchPaneOutputsDetailed, openHerdrEvents, useHerdrStatus, useHerdrStart } from './store.ts'
+import { fetchPaneOutputsDetailed, subscribeHerdrEvents, useHerdrStatus, useHerdrStart } from './store.ts'
 import { useHerdrMode } from './mode.ts'
 import { getActivePane, setActivePane, useLayoutMode } from './layout-mode.ts'
 import type { HerdrAgentStatus, HerdrPaneView } from './types.ts'
@@ -148,6 +145,9 @@ export function HerdrPanesView() {
   const gridRef = useRef<HTMLDivElement | null>(null)
   const visibleRef = useRef(false)
   const pendingOutputIdsRef = useRef<Set<string>>(new Set())
+  // SSE handler 需稳定挂载（共享流常驻），allPanes 经 ref 读取避免 effect 反复重建
+  const allPanesRef = useRef(allPanes)
+  allPanesRef.current = allPanes
 
   const fetchVisibleOutputs = useCallback(async (ids: string[]) => {
     if (ids.length === 0) return
@@ -192,26 +192,18 @@ export function HerdrPanesView() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const ctrl = new AbortController()
-    let handle: { close(): void } | null = null
-    try {
-      handle = openHerdrEvents(ctrl.signal, ev => {
-        if (ev.type !== 'output') return
-        const pid = ev.pane_id
-        if (!pid) return
-        if (!allPanes.some(p => p.pane_id === pid)) return
-        if (visibleRef.current) {
-          void fetchVisibleOutputs([pid])
-        } else {
-          pendingOutputIdsRef.current.add(pid)
-        }
-      })
-    } catch { /* ignore */ }
-    return () => {
-      try { ctrl.abort() } catch { /* ignore */ }
-      try { handle?.close() } catch { /* ignore */ }
-    }
-  }, [allPanes, fetchVisibleOutputs])
+    return subscribeHerdrEvents(ev => {
+      if (ev.type !== 'output') return
+      const pid = ev.pane_id
+      if (!pid) return
+      if (!allPanesRef.current.some(p => p.pane_id === pid)) return
+      if (visibleRef.current) {
+        void fetchVisibleOutputs([pid])
+      } else {
+        pendingOutputIdsRef.current.add(pid)
+      }
+    })
+  }, [fetchVisibleOutputs])
 
   const agentByPaneWithOutputs = useMemo(() => {
     if (paneOutputs.size === 0) return agentByPane
@@ -266,14 +258,6 @@ export function HerdrPanesView() {
   const wsCount = visibleGroups.length
   const agentCount = allPanes.filter(p => agentByPaneWithOutputs.has(p.pane_id)).length
   const serverRunning = snap?.server?.running === true
-  const statusCounts = useMemo(() => {
-    const counts: Record<string, number> = { working: 0, blocked: 0, idle: 0, done: 0, unknown: 0 }
-    for (const p of allPanes) {
-      const st = paneDisplayState(agentByPaneWithOutputs.get(p.pane_id)?.status ?? p.agent_status)
-      counts[st]++
-    }
-    return counts
-  }, [allPanes, agentByPaneWithOutputs])
 
   // ── T11 关闭交互 ──────────────────────────────────────────────────
   // 通用：POST + 乐观移除 + 失败回滚 + 错误横幅 + refresh（v3：仅 pane 级关闭）
@@ -400,21 +384,6 @@ export function HerdrPanesView() {
 
       {dropHint ? <div className="herdr-drop-hint">{dropHint}</div> : null}
       {snap?.stale ? <div className="herdr-stale-hint" role="status">{t('dashboard.stale')}</div> : null}
-
-      {paneCount > 0 ? (
-        <div className="herdr-state-tiles" role="status" aria-label={t('view.statusSummary')}>
-          {(['working', 'blocked', 'idle', 'done', 'unknown'] as const)
-            .filter(s => s !== 'done')
-            .filter(s => statusCounts[s] > 0)
-            .sort((a, b) => statusSortPriority(a) - statusSortPriority(b))
-            .map(s => (
-              <span key={s} className="herdr-state-tile" data-state={s}>
-                <b>{statusCounts[s]}</b>
-                <span className="herdr-state-tile-label">{t(ariaStateLabel(s))}</span>
-              </span>
-            ))}
-        </div>
-      ) : null}
 
       <div className="herdr-head">
         <span className="herdr-head-title">

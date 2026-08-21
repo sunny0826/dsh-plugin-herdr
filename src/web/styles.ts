@@ -61,6 +61,10 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
 @media (max-width: 720px) {
   .herdr-pane-grid { grid-template-columns: minmax(0, 1fr); }
 }
+/* 宽屏三列（>1600px）：pane 多时提高密度 */
+@media (min-width: 1600px) {
+  .herdr-pane-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 /* 480px 以下隐藏次要 meta（pane id、时间），保留 pane 名、状态和主操作 */
 @media (max-width: 480px) {
   .herdr-header-stats { display: none; }
@@ -193,7 +197,6 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
   border: 1px solid var(--dsw-alias-border-l1);
   background: var(--dsw-alias-bg-layer-1);
   cursor: pointer;
-  min-height: 360px;
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
@@ -355,6 +358,7 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
   border-radius: 0 0 8px 8px;
 }
 /* ── 交互式终端（design: pane-xterm-terminal-design §4） ─── */
+/* 终端 surface 恒深色（cyberdream）：浅色主题下灰底终端对比度差、无终端感 */
 .herdr-term {
   position: relative;
   flex: 1;
@@ -366,10 +370,37 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
   font-family: var(--ds-font-family-code);
   font-size: 12px;
   line-height: 18px;
-  background: var(--dsw-alias-markdown-code-block);
+  background: #1f2937;
   border-radius: 8px;
   overflow: hidden;
 }
+/* 紧凑模式（网格卡片）：固定高度终端（约 20 行），可直接查看与操作 */
+.herdr-term--compact {
+  flex: none;
+  min-height: 0;
+}
+/* host 脱离 flex 拉伸：xterm-screen 的行高内联高度会反向撑大 flex 链，
+ * 必须把固定高度作为唯一高度来源（screen 溢出由 overflow:hidden 裁掉，fit 后收敛） */
+.herdr-term--compact .herdr-term-host-wrap {
+  flex: none;
+}
+.herdr-term--compact .herdr-xterm-host {
+  flex: none;
+  height: 320px; /* 20 行 × 15.6 + 上下 padding */
+}
+/* 紧凑模式状态 chip：替代终端 header，浮于终端右上角 */
+.herdr-term-chip {
+  position: absolute; top: 6px; right: 8px; z-index: 3;
+  font-size: 10px; line-height: 14px; font-weight: 500;
+  padding: 2px 7px; border-radius: 999px;
+  background: rgba(15, 18, 25, .72);
+  color: #d1d5db;
+  border: 1px solid rgba(255, 255, 255, .14);
+  white-space: nowrap;
+  user-select: none;
+}
+.herdr-term-chip[data-mode='snapshot'] { color: #fbbf24; border-color: rgba(251, 191, 36, .35); }
+.herdr-term-chip[data-error] { color: #fca5a5; border-color: rgba(239, 68, 68, .5); }
 .herdr-list-detail .herdr-term {
   min-height: 420px;
 }
@@ -428,8 +459,8 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
   position: absolute;
   z-index: 6;
   white-space: nowrap;
-  background: var(--dsw-alias-markdown-code-block);
-  color: var(--dsw-alias-label-primary);
+  background: #1f2937;
+  color: #ffffff;
 }
 .herdr-xterm-host .composition-view.active { display: block; }
 .herdr-xterm-host .xterm-viewport {
@@ -455,13 +486,6 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
 .herdr-xterm-host .xterm-selection {
   background: var(--dsw-alias-state-info-primary) !important;
   opacity: 0.3;
-}
-html:not([data-ds-dark-theme]) .herdr-xterm-host .xterm-rows span[style*="background"] {
-  background-color: #f0f0f0 !important;
-  color: #141413 !important;
-}
-html:not([data-ds-dark-theme]) .herdr-log-segment[style*="background"] {
-  background-color: transparent !important;
 }
 /* 终端同步/状态指示 */
 .herdr-term-sync {
@@ -545,10 +569,6 @@ html:not([data-ds-dark-theme]) .herdr-log-segment[style*="background"] {
   border-bottom: 1px solid;
   transition: background-color 180ms, border-color 180ms;
 }
-.herdr-term-header[data-mode="observing"] {
-  background: #f6f6f6;
-  border-color: #e5e7eb;
-}
 .herdr-term-header[data-mode="controlling"] {
   background: color-mix(in srgb, var(--accent, #7c3aed) 6%, transparent);
   border-color: var(--accent);
@@ -560,10 +580,6 @@ html:not([data-ds-dark-theme]) .herdr-log-segment[style*="background"] {
 .herdr-term-header[data-mode="snapshot"] {
   background: #fef3c7;
   border-color: #fde68a;
-}
-body[data-ds-dark-theme] .herdr-term-header[data-mode="observing"] {
-  background: #1f2937;
-  border-color: #374151;
 }
 body[data-ds-dark-theme] .herdr-term-header[data-mode="controlling"] {
   background: color-mix(in srgb, var(--accent, #7c3aed) 12%, #1f2937);
@@ -630,31 +646,6 @@ body[data-ds-dark-theme] .herdr-term-header[data-mode="snapshot"] {
   cursor: help;
   white-space: nowrap;
 }
-.herdr-term-header-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
-  font-size: 11px;
-  line-height: 16px;
-  font-weight: 500;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: border-color .12s var(--ds-ease-in-out), background .12s var(--ds-ease-in-out);
-}
-.herdr-term-header-btn:hover { border-color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-interactive-bg-hover); }
-.herdr-term-header-btn--release { border-color: var(--dsw-alias-state-business-secondary); }
-.herdr-term-header-hint {
-  font-size: 10px;
-  line-height: 14px;
-  color: var(--dsw-alias-label-tertiary);
-  font-weight: 400;
-}
 .herdr-term-host-wrap {
   position: relative;
   flex: 1;
@@ -663,23 +654,8 @@ body[data-ds-dark-theme] .herdr-term-header[data-mode="snapshot"] {
   flex-direction: column;
   overflow: hidden;
 }
-.herdr-term-hover {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.08);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0;
-  transition: opacity 150ms 150ms;
-  pointer-events: none;
-}
-.herdr-xterm-host:hover .herdr-term-hover {
-  opacity: 1;
-}
 @media (prefers-reduced-motion: reduce) {
   .herdr-term-header { transition: none; }
-  .herdr-term-hover { transition: none; }
 }
 .herdr-term-conflict-bar {
   background: #fee2e2;
@@ -938,32 +914,6 @@ body[data-ds-dark-theme] .herdr-term-conflict-bar {
 /* done 从成功绿改为中性灰（dashboard-redesign：done≠idle） */
 .herdr-state-text[data-state=done] { color: var(--dsw-alias-label-tertiary); }
 .herdr-state-text[data-state=unknown] { color: var(--dsw-alias-label-tertiary); }
-/* 五态 KPI-lite 状态块（design: herdr-tab-redesign §4.2 重设计——紧凑瓦片，
-   与 dashboard KPI 同一视觉语言：16px 数字 + 11px 标签 + 卡片面） */
-.herdr-state-tiles {
-  display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap;
-}
-.herdr-state-tile {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-  padding: 8px 12px; border-radius: 12px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  background: var(--dsw-alias-bg-layer-1);
-  min-width: 0;
-}
-.herdr-state-tile b {
-  font-size: 16px; font-weight: 600; line-height: 22px;
-  font-variant-numeric: tabular-nums;
-  color: var(--dsw-alias-label-primary);
-}
-.herdr-state-tile-label {
-  font-size: 11px; line-height: 16px;
-  color: var(--dsw-alias-label-tertiary);
-}
-.herdr-state-tile[data-state='working'] b { color: var(--dsw-alias-state-business-primary); }
-.herdr-state-tile[data-state='blocked'] b { color: var(--dsw-alias-state-error-primary); }
-.herdr-state-tile[data-state='idle'] b { color: var(--dsw-alias-state-success-primary); }
-.herdr-state-tile[data-state='done'] b,
-.herdr-state-tile[data-state='unknown'] b { color: var(--dsw-alias-label-tertiary); }
 /* dotState() legacy: StateDot primitive 兼容（ongoing/error/done） */
 .herdr-state-text[data-dot=done] { color: var(--dsw-alias-state-success-primary); }
 .herdr-state-text[data-dot=error] { color: var(--dsw-alias-state-error-primary); }

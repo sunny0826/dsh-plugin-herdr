@@ -201,6 +201,7 @@ export function PaneCard({
         paneId={pane.pane_id}
         status={status}
         accent={agent ? agentTheme(agent.agent) : undefined}
+        compact
       />
 
       {renameError ? <div className="herdr-inline-error">{renameError}</div> : null}

@@ -76,15 +76,6 @@ export function dotState(status: string | undefined): string {
 /** 协议状态 → 展示态（5 态；unknown 不再伪装 done）。 */
 export type PaneDisplayState = 'working' | 'blocked' | 'idle' | 'done' | 'unknown'
 
-/** 状态展示优先级（数值越小 = 越需要用户介入）。 */
-const STATUS_PRIORITY: Record<PaneDisplayState, number> = {
-  blocked: 0,
-  working: 1,
-  idle: 2,
-  done: 3,
-  unknown: 4,
-}
-
 /** 将任意协议状态归一化为展示态（缺失/空/未识别 → unknown）。 */
 export function paneDisplayState(status: string | undefined): PaneDisplayState {
   switch (status) {
@@ -94,11 +85,6 @@ export function paneDisplayState(status: string | undefined): PaneDisplayState {
     case 'done': return 'done'
     default: return 'unknown'
   }
-}
-
-/** 展示态排序优先级（数值越小越优先）。 */
-export function statusSortPriority(state: PaneDisplayState): number {
-  return STATUS_PRIORITY[state]
 }
 
 /** 五态的无障碍文本 key（组件层通过 t() 获取双语文案）。 */
@@ -401,6 +387,8 @@ export type SseEvent =
   | { type: 'agent_status'; pane_id: string; agent: string; status: string; message?: string; workspace_id?: string }
   | { type: 'topology'; topology: unknown; filter?: unknown }
   | { type: 'heartbeat'; stale: boolean; last_error: string | null }
+  /** 终端会话帧（服务端 /herdr-events 转发；无数字 id，不推进 revision 游标）。 */
+  | { type: 'term'; session_id: string; pane_id: string; event: unknown }
 
 export interface SseHandle {
   close(): void
@@ -1399,4 +1387,13 @@ export function computeGlobalSurfaceBounds(
     width: Math.max(0, viewportWidth - left),
     height: viewportHeight,
   }
+}
+
+// ---------------------------------------------------------------------------
+// PaneTerminal 卡片（网格紧凑模式）纯逻辑
+// ---------------------------------------------------------------------------
+
+/** 是否把 xterm 尺寸回传真实 PTY：仅控制态（快照模式无 session）。 */
+export function shouldPushTerminalResize(mode: 'controlling' | 'snapshot'): boolean {
+  return mode === 'controlling'
 }

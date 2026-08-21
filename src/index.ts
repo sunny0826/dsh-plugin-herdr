@@ -126,15 +126,36 @@ export function apply(ctx: Context, config: ConfigType) {
   let offAgentsOutputRoute: (() => void) | null = null
   let offSseRoute: (() => void) | null = null
   let offTerminalSessionRoutes: (() => void) | null = null
+  // /herdr-events 活跃连接数：web 端所有终端帧共享这一条流，最后一个连接
+  // 断开即视为所有浏览器客户端离开，会话统一进入断开宽限回收。
+  let sseClients = 0
   // Pane 终端 Observer/Controller（design: pane-terminal-session-state-machine §6）
   const terminalSessionCfg = resolveTerminalSessionConfig(config)
   let terminalManager: TerminalSessionManager | null = null
   let terminalCapability: TerminalSessionCapability | null = null
+  let terminalCapabilityAt = 0
+  let terminalCapabilityInflight: Promise<TerminalSessionCapability> | null = null
+  // 探测并发单飞 + 失败短 TTL（30s）：多卡片同时启动时不得并发探测 CLI，
+  // 且失败结果不能永久负缓存，否则一次抖动就整页 503。
+  const TERMINAL_PROBE_FAILURE_TTL_MS = 30_000
   const ensureTerminalAvailable = async (): Promise<boolean> => {
-    if (!terminalCapability) {
-      terminalCapability = await probeTerminalSession({ binPath: terminalSessionCfg.binPath })
+    if (terminalCapability?.available) return true
+    if (terminalCapability && Date.now() - terminalCapabilityAt < TERMINAL_PROBE_FAILURE_TTL_MS) {
+      return terminalCapability.available
     }
-    return terminalCapability.available
+    if (!terminalCapabilityInflight) {
+      terminalCapabilityInflight = probeTerminalSession({ binPath: terminalSessionCfg.binPath })
+        .then(cap => {
+          terminalCapability = cap
+          terminalCapabilityAt = Date.now()
+          terminalCapabilityInflight = null
+          return cap
+        }, err => {
+          terminalCapabilityInflight = null
+          throw err
+        })
+    }
+    return (await terminalCapabilityInflight).available
   }
   ctx.inject(['webServer'], injected => {
     const webServer = (injected as unknown as { webServer: { register(r: unknown): () => void } }).webServer
@@ -708,10 +729,34 @@ export function apply(ctx: Context, config: ConfigType) {
           } catch { /* ignore */ }
         })
         disposers.push(offResource)
+        // 终端会话帧并入单流（替代 per-session SSE，避免浏览器并发连接耗尽）：
+        // 全局转发不带数字 id，避免污染客户端 lastRevision 游标；
+        // 新连接对 live session 回放 ready + 最新 full 基线，补齐断线期间的缺口。
+        if (terminalManager) {
+          const offTerm = terminalManager.addGlobalListener((sid, pid, ev) => {
+            send('term', { session_id: sid, pane_id: pid, event: ev })
+          })
+          disposers.push(offTerm)
+          sseClients++
+          terminalManager.onGlobalClientConnect()
+          try {
+            for (const ls of terminalManager.liveSessions()) {
+              const full = terminalManager.replayLatestFull(ls.sessionId)
+              if (!full) continue
+              send('term', { session_id: ls.sessionId, pane_id: ls.paneId, event: { type: 'ready', sessionId: ls.sessionId, mode: ls.mode, generation: ls.generation, resumed: true, afterSeq: full.seq } })
+              send('term', { session_id: ls.sessionId, pane_id: ls.paneId, event: full })
+            }
+          } catch { /* 回放失败不影响主事件流 */ }
+        }
 
         const cleanup = (): void => {
           clearInterval(hbTimer)
           for (const d of disposers) try { d() } catch { /* ignore */ }
+          // 最后一条单流断开：所有 terminal session 进入断开宽限回收
+          sseClients = Math.max(0, sseClients - 1)
+          if (sseClients === 0 && terminalManager) {
+            try { terminalManager.onGlobalClientDisconnect() } catch { /* ignore */ }
+          }
         }
         const maybeReq = rawReq as { on?: (ev: string, cb: () => void) => unknown }
         if (typeof maybeReq.on === 'function') {
